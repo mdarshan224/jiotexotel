@@ -3,12 +3,12 @@ export async function stopAgentPresence(client:any,agentId:string){
  await client.agent.updateMany({where:{id:agentId,status:{in:ONLINE_AGENT_STATUSES}},data:{status:'OFFLINE',locationReceivedAt:null}});
 }
 /** Persist permission-dependent presence in the same transaction as the availability change. */
-export async function saveAgentPresenceTx(tx:any,agentId:string,fix:AgentFix,proof:any,targetStatus?:string,orderId?:string,tokenVersion?:number){
+export async function saveAgentPresenceTx(tx:any,agentId:string,fix:AgentFix,proof:any,targetStatus?:string,orderId?:string,tokenVersion?:number,agentTokenVersion?:number){
  const agent=await tx.agent.findUnique({where:{id:agentId}});
  if(!agent||['SUSPENDED','DEACTIVATED'].includes(agent.status))throw new AgentLocationError('AGENT_INACTIVE','Your account is inactive. Contact support.',403);
  if(tokenVersion!==undefined){
   const owner=await tx.user.findUnique({where:{id:agent.userId},select:{tokenVersion:true}});
-  if(agent.tokenVersion!==tokenVersion||owner?.tokenVersion!==tokenVersion)throw new AgentLocationError('UNAUTHORIZED','Your session has ended. Sign in again.',401);
+  if(agent.tokenVersion!==(agentTokenVersion??tokenVersion)||owner?.tokenVersion!==tokenVersion)throw new AgentLocationError('UNAUTHORIZED','Your session has ended. Sign in again.',401);
  }
  if(!targetStatus&&!ONLINE_AGENT_STATUSES.includes(agent.status))throw new AgentLocationError('AGENT_OFFLINE','Go online with a fresh GPS reading first.');
  assertPlausibleMovement(agent,fix);

@@ -1,4 +1,6 @@
 'use client';
+import {agentFetch as fetch} from '@/lib/agentFetch';
+import {useAgentSession} from '@/components/AgentSession';
 import WeightAdjustmentPayment from '@/components/WeightAdjustmentPayment';
 import {ONLINE_AGENT_STATUSES} from '@/lib/agents/locationPolicy';
 import {agentPickupGroup, agentLedgerTotals, agentWeightRows} from '@/lib/agentPortal';
@@ -42,6 +44,7 @@ import {
 } from '@/lib/agentGeolocation';
 
 export default function AgentDashboardPage() {
+  const {refresh:refreshSession,logout:logoutAgent}=useAgentSession();
   const [historySearch,setHistorySearch] = useState('');
   const [historyFilter,setHistoryFilter] = useState('all');
   const [lastSynced,setLastSynced] = useState<Date|null>(null);
@@ -69,13 +72,7 @@ export default function AgentDashboardPage() {
   const [acceptingPickup, setAcceptingPickup] = useState(false);
   const [actionLoading, setActionLoading] = useState<'accept' | 'start' | 'arrive' | null>(null);
 
-  // Agent OTP Login State
-  const [loginPhone, setLoginPhone] = useState('');
-  const [loginOtp, setLoginOtp] = useState('');
-  const [otpSent, setOtpSent] = useState(false);
-  const [loginLoading, setLoginLoading] = useState(false);
-  const [loggingOut, setLoggingOut] = useState(false);
-  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loggingOut,setLoggingOut]=useState(false);
 
   // Weighing Modal State
   const [showWeighModal, setShowWeighModal] = useState(false);
@@ -106,7 +103,6 @@ export default function AgentDashboardPage() {
   const actionRequestRef = useRef(false);
   const statusRequestRef = useRef(false);
   const weighingRequestRef = useRef(false);
-  const loginRequestRef = useRef(false);
   const activeOrderRef = useRef(activeOrder);
   activeOrderRef.current = activeOrder;
   const seenBookingNotificationIdsRef = useRef(new Set<string>());
@@ -138,13 +134,14 @@ export default function AgentDashboardPage() {
         const authTimeout = setTimeout(() => authController.abort(), 12000);
         let profileData: any = { success: false };
         try {
-          const profileRes = await fetch('/api/auth/me', { cache: 'no-store', signal: authController.signal });
+          const profileRes = await fetch('/api/auth/me?portal=agent', { cache: 'no-store', signal: authController.signal });
           profileData = await profileRes.json().catch(() => ({ success: false }));
         } finally {
           clearTimeout(authTimeout);
         }
 
         if (!profileData.success || !profileData.data?.user || profileData.data.user.role !== 'AGENT') {
+          void refreshSession();
           setAgent(null);
           setOrders([]);
           setActiveOrder(null);
@@ -157,6 +154,7 @@ export default function AgentDashboardPage() {
         agentProfile = agentUser.agent || null;
 
         if (!agentProfile || !agentProfile.id) {
+          void refreshSession();
           setAgent(null);
           setOrders([]);
           setActiveOrder(null);
@@ -182,6 +180,7 @@ export default function AgentDashboardPage() {
       try {
         const ordersRes = await fetch('/api/orders?limit=20', { cache: 'no-store', signal: ordersController.signal });
         if (ordersRes.status === 401) {
+          void refreshSession();
           setAgent(null);
           setOrders([]);
           setActiveOrder(null);
@@ -269,7 +268,7 @@ export default function AgentDashboardPage() {
         setIsRefreshing(false);
       }
     }
-  }, []);
+  }, [refreshSession]);
 
   const fetchAgentWallet = useCallback(async () => {
     setLoadingWallet(true);
@@ -429,7 +428,7 @@ export default function AgentDashboardPage() {
             e.type === 'ORDER_CANCELLED' || payload?.status === 'CANCELLED';
           if (isCancelled) {
             const num = payload?.orderNumber ? ` #${payload.orderNumber}` : '';
-            setStatusNotice(`Order${num} has been cancelled by the customer.`);
+            setStatusNotice(`Order${num} has been closed. Check the updated pickup status.`);
           }
           void fetchAgentData(false);
         } catch (err) {
@@ -673,86 +672,7 @@ export default function AgentDashboardPage() {
     }
   };
 
-  const handleSendOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (loginRequestRef.current) return;
-    if (!loginPhone || loginPhone.trim().length < 10) {
-      setLoginError('Please enter a valid 10-digit agent mobile number.');
-      return;
-    }
-    loginRequestRef.current = true;
-    setLoginLoading(true);
-    setLoginError(null);
-    try {
-      const res = await fetch('/api/auth/send-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: loginPhone }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setOtpSent(true);
-      } else {
-        setLoginError(data.message || 'Failed to send OTP to agent phone.');
-      }
-    } catch {
-      setLoginError('Network error sending OTP.');
-    } finally {
-      setLoginLoading(false);
-      loginRequestRef.current = false;
-    }
-  };
-
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (loginRequestRef.current) return;
-    if (!loginOtp || loginOtp.trim().length < 4) {
-      setLoginError('Please enter the OTP code received.');
-      return;
-    }
-    loginRequestRef.current = true;
-    setLoginLoading(true);
-    setLoginError(null);
-    try {
-      const res = await fetch('/api/auth/agent-login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: loginPhone, code: loginOtp }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        fetchAgentData();
-      } else {
-        setLoginError(data.error?.message || data.message || 'Agent authentication failed.');
-      }
-    } catch {
-      setLoginError('Network error verifying agent OTP.');
-    } finally {
-      setLoginLoading(false);
-      loginRequestRef.current = false;
-    }
-  };
-
-  const handleLogout = async () => {
-    if (loggingOut) return;
-    setLoggingOut(true);
-    try {
-      const response = await fetch('/api/auth/logout', { method: 'POST' });
-      if (!response.ok) throw new Error('Logout request failed.');
-      setIsOnline(false);setLocationSharing(false);
-      setAgent(null);
-      setOrders([]);
-      setActiveOrder(null);
-      setDashboardError(null);
-      setOtpSent(false);
-      setLoginOtp('');
-    } catch (e) {
-      console.error('Agent logout error:', e);
-      setStatusNotice('Unable to log out. Check your connection and try again.');
-    } finally {
-      setLoggingOut(false);
-    }
-  };
+  const handleLogout=async()=>{if(loggingOut)return;setLoggingOut(true);try{await logoutAgent();}catch(error){setStatusNotice(error instanceof Error?error.message:'Could not sign out.');}finally{setLoggingOut(false);}};
 
   const toggleAgentStatus = async () => {
     if (statusRequestRef.current) return;
@@ -1090,103 +1010,7 @@ export default function AgentDashboardPage() {
     );
   }
 
-  // AGENT LOGIN FLOW (If unauthenticated or not an AGENT)
-  if (!agent) {
-    return (
-      <div className="max-w-md mx-auto min-h-screen bg-slate-950 text-white p-4 flex flex-col justify-center">
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 space-y-6 shadow-2xl animate-scale-in">
-          <div className="text-center space-y-2">
-            <div className="w-14 h-14 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-2xl grid place-items-center mx-auto">
-              <Truck className="w-7 h-7" />
-            </div>
-            <h1 className="text-xl font-black text-white">Agent Partner Portal</h1>
-            <p className="text-xs text-slate-400">
-              Sign in with your registered agent mobile number to manage doorstep pickup dispatch.
-            </p>
-          </div>
-
-          {loginError && (
-            <div role="alert" className="p-3 bg-rose-950/60 border border-rose-800/80 text-rose-300 rounded-2xl text-xs font-bold flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-              <span>{loginError}</span>
-            </div>
-          )}
-
-          {!otpSent ? (
-            <form onSubmit={handleSendOtp} className="space-y-4">
-              <div className="space-y-1.5">
-                <label htmlFor="agent-login-phone" className="block text-xs font-bold text-slate-400 uppercase">Agent Mobile Number</label>
-                <div className="relative">
-                  <Smartphone className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                  <input
-                    id="agent-login-phone"
-                    type="tel"
-                    required
-                    value={loginPhone}
-                    onChange={(e) => setLoginPhone(e.target.value)}
-                    placeholder="+91 98765 43210"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-2xl py-3.5 pl-10 pr-4 text-sm font-bold text-white outline-none focus:border-emerald-500"
-                  />
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={loginLoading}
-                className="w-full btn-glossy-primary rounded-full text-slate-950 font-black text-xs py-4 uppercase tracking-wider shadow-lg flex items-center justify-center gap-2"
-              >
-                {loginLoading ? <RefreshCw className="w-4 h-4 animate-spin shrink-0" /> : 'SEND AGENT LOGIN OTP'}
-                <ArrowRight className="w-4 h-4 shrink-0" />
-              </button>
-            </form>
-          ) : (
-            <form onSubmit={handleVerifyOtp} className="space-y-4">
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label htmlFor="agent-login-otp" className="block text-xs font-bold text-slate-400 uppercase">Enter Verification OTP</label>
-                  <button
-                    type="button"
-                    onClick={() => setOtpSent(false)}
-                    className="text-[11px] text-emerald-400 font-bold hover:underline"
-                  >
-                    Change Phone
-                  </button>
-                </div>
-                <div className="relative">
-                  <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                  <input
-                    id="agent-login-otp"
-                    type="text"
-                    required
-                    autoFocus
-                    value={loginOtp}
-                    onChange={(e) => setLoginOtp(e.target.value)}
-                    placeholder="Enter 6-digit OTP"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-2xl py-3.5 pl-10 pr-4 text-sm font-bold text-emerald-400 outline-none focus:border-emerald-500 tracking-widest"
-                  />
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={loginLoading}
-                className="w-full btn-glossy-primary rounded-full text-slate-950 font-black text-xs py-4 uppercase tracking-wider shadow-lg flex items-center justify-center gap-2"
-              >
-                {loginLoading ? <RefreshCw className="w-4 h-4 animate-spin shrink-0" /> : 'VERIFY & ACCESS PORTAL'}
-                <ArrowRight className="w-4 h-4 shrink-0" />
-              </button>
-            </form>
-          )}
-
-          <div className="pt-2 text-center border-t border-slate-800/80">
-            <p className="text-[11px] text-slate-500">
-              Only authorized Junk It Out logistics personnel are permitted to sign in here.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  if(!agent)return <section className="flex min-h-[100dvh] items-center justify-center bg-slate-950 p-6 text-white"><div className="max-w-sm space-y-5 text-center"><h1 className="text-xl font-bold">Your partner workspace</h1><p className="text-sm leading-6 text-slate-400">{dashboardError||'Loading your account. Please try again if this takes a moment.'}</p><button onClick={()=>void fetchAgentData()} className="min-h-12 rounded-xl bg-emerald-700 px-6 font-semibold">Try again</button><button onClick={()=>void handleLogout()} disabled={loggingOut} className="block min-h-11 w-full text-sm text-slate-400">Sign out</button></div></section>;
 
   const todayPickups = orders.length;
   const completedPickups = orders.filter((o) => agentPickupGroup(o.status)==='completed');
@@ -1492,7 +1316,7 @@ export default function AgentDashboardPage() {
                 )}
               </div>
 
-              <OrderCallButton orderId={activeOrder.id} label="Call customer" className="px-4 py-3 btn-glossy-primary rounded-2xl shadow-lg text-sm font-bold disabled:opacity-50" />
+              <OrderCallButton portal="AGENT" orderId={activeOrder.id} label="Call customer" className="px-4 py-3 btn-glossy-primary rounded-2xl shadow-lg text-sm font-bold disabled:opacity-50" />
             </div>
 
             {isOnline && ['AGENT_ACCEPTED', 'AGENT_ON_WAY', 'AGENT_ARRIVED', 'WEIGHING', 'WASTE_VERIFICATION'].includes(activeOrder.status) && (

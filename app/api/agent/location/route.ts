@@ -22,7 +22,7 @@ export async function POST(req:NextRequest){
   const agent=await db.agent.findUnique({where:{id:agentId}});
   if(!agent||!ONLINE_AGENT_STATUSES.includes(agent.status))throw new AgentLocationError('AGENT_OFFLINE','Go online with a fresh device location first.');
   const proof=await verifyBengaluruLocality(agent,fix);
-  const result=await db.$transaction(tx=>saveAgentPresenceTx(tx,agentId!,fix,proof,undefined,body.orderId?String(body.orderId):undefined,auth.tokenVersion??1));
+  const result=await db.$transaction(tx=>saveAgentPresenceTx(tx,agentId!,fix,proof,undefined,body.orderId?String(body.orderId):undefined,auth.tokenVersion??1,auth.agentTokenVersion??auth.tokenVersion??1));
   if(result.orderId)broadcaster.broadcast('AGENT_LOCATION_UPDATED',{
    agentId,orderId:result.orderId,agentName:result.agent.user.name,vehicleNumber:result.agent.vehicleNumber,
    status:result.agent.status,lat:fix.lat,lng:fix.lng,timestamp:result.location.timestamp,

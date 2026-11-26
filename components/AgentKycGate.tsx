@@ -1,10 +1,15 @@
 'use client';
-import {useEffect,useState} from 'react';
+import {useEffect} from 'react';
 import {usePathname} from 'next/navigation';
+import {LoaderCircle} from 'lucide-react';
+import {agentPageAccess} from '@/lib/agentSession';
+import {useAgentSession} from './AgentSession';
+import AgentAuthScreen from './AgentAuthScreen';
 export default function AgentKycGate({children}:{children:React.ReactNode}){
- const path=usePathname(),[ready,setReady]=useState(false),[error,setError]=useState(false),[retry,setRetry]=useState(0);
- useEffect(()=>{if(path==='/agent/onboarding'){setReady(true);return;}let active=true;const controller=new AbortController();async function check(){setReady(false);setError(false);try{const response=await fetch('/api/auth/me',{cache:'no-store',signal:controller.signal}),data=await response.json();if(!active)return;if(data.data?.user?.role==='AGENT'&&data.data.user.agent?.onboardingApproved!==true){window.location.replace('/agent/onboarding');return;}if(!response.ok&&response.status!==401)throw new Error();setReady(true);}catch{if(active)setError(true);}}void check();window.addEventListener('jio_auth_change',check);return()=>{active=false;controller.abort();window.removeEventListener('jio_auth_change',check);};},[path,retry]);
- if(path==='/agent/onboarding')return children;
- if(error)return <div className="min-h-screen bg-slate-950 p-8 text-white"><p>Could not verify agent access.</p><button className="mt-4 rounded-xl bg-emerald-700 px-5 py-3" onClick={()=>setRetry(value=>value+1)}>Try again</button></div>;
- return ready?children:<div role="status" className="min-h-screen bg-slate-950 p-8 text-white">Checking agent verification…</div>;
+ const path=usePathname(),{session,refresh}=useAgentSession(),access=agentPageAccess(session,path);
+ useEffect(()=>{if(access==='redirect')window.location.replace('/agent/onboarding');},[access]);
+ if(access==='guest')return <AgentAuthScreen/>;
+ if(access==='error')return <section className="flex min-h-[100dvh] items-center justify-center bg-[#f3f8f4] p-6"><div className="max-w-sm rounded-3xl border bg-white p-7 text-center"><h1 className="text-xl font-bold">Let’s reconnect.</h1><p className="mt-3 text-sm leading-6 text-slate-500">We couldn’t check your session. Please check your connection and try again.</p><button className="mt-5 min-h-12 rounded-xl bg-emerald-800 px-6 font-semibold text-white" onClick={()=>void refresh()}>Try again</button></div></section>;
+ if(access==='checking'||access==='redirect')return <div role="status" aria-live="polite" className="flex min-h-[100dvh] items-center justify-center gap-3 bg-[#f3f8f4] p-6 text-sm font-semibold text-emerald-900"><LoaderCircle size={22} className="animate-spin"/>Opening your partner portal…</div>;
+ return children;
 }

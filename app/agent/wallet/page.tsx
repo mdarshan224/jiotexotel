@@ -1,5 +1,7 @@
 'use client';
+import {agentFetch as fetch} from '@/lib/agentFetch';
 
+import {useAgentSession} from '@/components/AgentSession';
 import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from '@/components/AppLink';
 import {
@@ -38,6 +40,7 @@ interface WalletTransaction {
 }
 
 export default function AgentWalletPage() {
+  const {refresh:refreshSession}=useAgentSession();
   const requestRef = useRef(false);
   const [query,setQuery] = useState('');
   const [wallet, setWallet] = useState<WalletData | null>(null);
@@ -62,6 +65,7 @@ export default function AgentWalletPage() {
 
       if (!res.ok || !json.success) {
         if (res.status === 401) {
+          void refreshSession();
           setWallet(null); setTransactions([]);
           setError('Agent session expired. Please sign in again.');
         } else {
@@ -79,7 +83,7 @@ export default function AgentWalletPage() {
       setLoading(false);
       setIsRefreshing(false);
     }
-  }, []);
+  }, [refreshSession]);
 
   useEffect(() => {
     fetchWalletData();

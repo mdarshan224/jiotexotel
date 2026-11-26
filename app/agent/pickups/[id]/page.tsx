@@ -1,4 +1,5 @@
 'use client';
+import {agentFetch as fetch} from '@/lib/agentFetch';
 import {useEffect,useState} from 'react';
 import {useParams} from 'next/navigation';
 import Link from '@/components/AppLink';

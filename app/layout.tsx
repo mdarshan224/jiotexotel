@@ -5,7 +5,6 @@ import Footer from '@/components/Footer';
 import MobileAppRegistration from '@/components/MobileAppRegistration';
 import MobileCartBar from '@/components/MobileCartBar';
 import BottomNav from '@/components/BottomNav';
-import AgentBottomNav from '@/components/AgentBottomNav';
 import CustomerMotionShell from '@/components/CustomerMotionShell';
 
 const getMetadataBase = () => {
@@ -63,7 +62,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <Footer />
         <MobileCartBar />
         <BottomNav />
-        <AgentBottomNav />
       </body>
     </html>
   );

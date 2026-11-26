@@ -5,7 +5,7 @@ import { getAuthUser } from '@/lib/auth/middleware';
 import { db, isDatabaseConfigurationError } from '@/lib/db';
 import { successResponse, errorResponse } from '@/lib/utils/apiResponse';
 
-export async function GET(req: NextRequest) {
+async function currentSession(req: NextRequest) {
   try {
     const authUser = await getAuthUser(req);
     if (!authUser) {
@@ -87,3 +87,5 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+
+export async function GET(req:NextRequest){const response=await currentSession(req);response.headers.set('Cache-Control','private, no-store');response.headers.set('Vary','Cookie, Authorization, Referer, X-Jio-Portal');return response;}

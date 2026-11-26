@@ -33,7 +33,7 @@ export async function PATCH(req:NextRequest){
    const proof=await verifyBengaluruLocality(agent,fix);
    result=await db.$transaction(async tx=>{
     if(!await agentOnboardingApproved(tx,agentId!))throw new AgentLocationError('AGENT_KYC_REQUIRED','Identity approval is required.');
-    return (await saveAgentPresenceTx(tx,agentId!,fix,proof,status,undefined,auth.tokenVersion??1)).agent;
+    return (await saveAgentPresenceTx(tx,agentId!,fix,proof,status,undefined,auth.tokenVersion??1,auth.agentTokenVersion??auth.tokenVersion??1)).agent;
    });
    if(result.status==='AVAILABLE')runBackgroundTask(async()=>{await reconcileUndispatchedPaidOrders({limit:10});},'AgentOnlineDispatch');
   }

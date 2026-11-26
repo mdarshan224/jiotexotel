@@ -1,14 +1,16 @@
 'use client';
 
+import {useAgentSession} from './AgentSession';
 import Link from '@/components/AppLink';
 import { usePathname } from 'next/navigation';
 import { LayoutDashboard, Wallet, ShieldCheck } from 'lucide-react';
 
 export default function AgentBottomNav() {
   const pathname = usePathname();
+  const {session}=useAgentSession();
 
   // Only render inside /agent paths
-  if (!pathname.startsWith('/agent')||pathname==='/agent/onboarding') return null;
+  if (session.status!=='approved'||!pathname.startsWith('/agent')||pathname==='/agent/onboarding') return null;
 
   const links = [
     { href: '/agent', label: 'Dashboard', icon: LayoutDashboard },

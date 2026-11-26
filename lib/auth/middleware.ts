@@ -64,7 +64,7 @@ export async function validatePayload(
 
       if (!agent) return null;
       const currentDbVersion = (agent as any).tokenVersion ?? 1;
-      const tokenVersion = payload.tokenVersion ?? 1;
+      const tokenVersion = payload.agentTokenVersion ?? payload.tokenVersion ?? 1;
       if (tokenVersion !== currentDbVersion) {
         return null;
       }
@@ -98,6 +98,9 @@ async function resolveAuthUser(req: NextRequest): Promise<JwtPayload | null> {
     referer.includes('/admin');
   const isAgentContext =
     pathname.startsWith('/api/agent') ||
+    req.headers.get('x-jio-portal')==='agent'||
+    pathname==='/api/auth/agent-logout'||
+    (pathname==='/api/auth/me'&&req.nextUrl?.searchParams.get('portal')==='agent')||
     referer.includes('/agent');
 
   // If in admin context, prioritize jio_admin_token if present
@@ -183,6 +186,6 @@ export function getAdminAuthorizationStatus(user: JwtPayload | null): 200 | 401 
 export async function getAuthUser(req:NextRequest):Promise<JwtPayload|null>{
  const auth=await resolveAuthUser(req);if(auth?.role!=='AGENT')return auth;
  const pathname=req.nextUrl?.pathname||(req.url?new URL(req.url).pathname:'');
- if(['/api/auth/me','/api/auth/logout'].includes(pathname)||pathname==='/api/agent/onboarding'||pathname.startsWith('/api/agent/kyc/'))return auth;
+ if(['/api/auth/me','/api/auth/logout','/api/auth/agent-logout'].includes(pathname)||pathname==='/api/agent/onboarding'||pathname.startsWith('/api/agent/kyc/'))return auth;
  return auth.agentId&&await agentOnboardingApproved(db,auth.agentId)?auth:null;
 }
