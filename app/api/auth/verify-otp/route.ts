@@ -1,0 +1,258 @@
+import { isStaticCustomerTestPhone, isStaticCustomerTestCode } from '@/lib/auth/staticCustomerTest';
+import { assertPhoneCanLogin } from '@/lib/accountDeletion';
+import { AccountDeletionError } from '@/lib/accountDeletionPolicy';
+import { NextRequest } from 'next/server';
+import { verifyOtp } from '@/lib/auth/otp';
+import { validatePhone } from '@/lib/validations/schemas';
+import {
+  CustomerRoleConflictError,
+  findOrCreateUserCustomer,
+} from '@/lib/services/customerService';
+import { signToken } from '@/lib/auth/jwt';
+import {
+  successResponse,
+  errorResponse,
+} from '@/lib/utils/apiResponse';
+import {
+  getClientIp,
+  hasTrustedOrigin,
+} from '@/lib/auth/requestSecurity';
+import { db, isDatabaseConfigurationError } from '@/lib/db';
+import {
+  isCustomerTestOtpPhone,
+  isValidLocalOtpTestCode,
+} from '@/lib/auth/localOtpTest';
+
+export async function POST(req: NextRequest) {
+  try {
+    // Security check
+    if (!hasTrustedOrigin(req)) {
+      return errorResponse(
+        'FORBIDDEN',
+        'This request is not allowed.',
+        403
+      );
+    }
+
+    const body = await req.json().catch(() => ({}));
+
+    // Validate phone
+    const {
+      valid: phoneValid,
+      normalized,
+      error: phoneError,
+    } = validatePhone(body.phone);
+
+    if (!phoneValid) {
+      return errorResponse(
+        'INVALID_PHONE',
+        phoneError || 'Invalid phone number.',
+        400
+      );
+    }
+
+    // Validate OTP exists
+    if (!body.code || typeof body.code !== 'string') {
+      return errorResponse(
+        'INVALID_OTP',
+        'OTP code is required.',
+        400
+      );
+    }
+
+    const cleanCode = String(body.code).trim();
+
+    /*
+     * ---------------------------------------------------------
+     * TEST OTP MODE
+     * ---------------------------------------------------------
+     * Only the configured test phone can bypass Fast2SMS.
+     *
+     * .env:
+     * OTP_TEST_MODE=true
+     * OTP_TEST_PHONE=9876543210
+     *
+     * Any 6-digit OTP will work for this number.
+     * All other numbers continue through Fast2SMS.
+     * ---------------------------------------------------------
+     */
+
+    await assertPhoneCanLogin(normalized);
+    const isStaticTest = isStaticCustomerTestPhone(normalized);
+    const isTestPhone = isStaticTest || isCustomerTestOtpPhone(normalized);
+
+    /*
+     * Verify OTP
+     */
+    if (isTestPhone) {
+      // Test number: accept any 6-digit OTP
+      if (isStaticTest ? !isStaticCustomerTestCode(cleanCode) : !isValidLocalOtpTestCode(cleanCode)) {
+        return errorResponse(
+          'INVALID_OTP',
+          'Please enter a valid 6-digit OTP.',
+          400
+        );
+      }
+
+      console.log(
+        `[OTP_TEST_MODE] Test OTP accepted for configured test number.`
+      );
+    } else {
+      // All other numbers: normal Fast2SMS OTP verification
+      const otpVerification = await verifyOtp(
+        normalized,
+        cleanCode,
+        getClientIp(req)
+      );
+
+      if (!otpVerification.valid) {
+        const status =
+          otpVerification.status === 'rate_limited'
+            ? 429
+            : 400;
+
+        const msg =
+          typeof (otpVerification as any).errorDetails === 'string' &&
+          (otpVerification as any).errorDetails
+            ? (otpVerification as any).errorDetails
+            : 'The OTP could not be verified. Please request a new code and try again.';
+
+        const providerMessage = msg.toLowerCase();
+        const isExpiredOrConsumed =
+          providerMessage.includes('otp not found') ||
+          providerMessage.includes('already verified') ||
+          providerMessage.includes('expired');
+
+        return errorResponse(
+          isExpiredOrConsumed ? 'OTP_EXPIRED' : 'OTP_VERIFICATION_FAILED',
+          isExpiredOrConsumed
+            ? 'This OTP has expired or was already used. Please request a new OTP and try again.'
+            : msg,
+          status
+        );
+      }
+    }
+
+    // ---------------------------------------------------------
+    // Find or create customer
+    // ---------------------------------------------------------
+
+    const existingUser = await db.user.findUnique({
+      where: {
+        phone: normalized,
+      },
+      select: {
+        id: true,
+        name: true,
+        role: true,
+      },
+    });
+
+    const providedName =
+      typeof body.name === 'string'
+        ? body.name.trim()
+        : '';
+
+    const hasExistingRealName =
+      existingUser?.role === 'CUSTOMER' &&
+      existingUser.name &&
+      existingUser.name !== 'Customer' &&
+      existingUser.name !== 'Valued Customer' &&
+      existingUser.name !== 'Valued Member';
+
+    let userName: string;
+
+    if (hasExistingRealName) {
+      userName = existingUser!.name!;
+    } else if (
+      providedName &&
+      providedName.length >= 2
+    ) {
+      userName = providedName;
+    } else {
+      userName = 'Customer';
+    }
+
+    const user = await findOrCreateUserCustomer(
+      normalized,
+      userName
+    );
+
+    // ---------------------------------------------------------
+    // Create JWT
+    // ---------------------------------------------------------
+
+    const token = signToken({
+      userId: user.id,
+      phone: user.phone,
+      name: user.name,
+      role: 'CUSTOMER',
+      customerId: user.customer?.id,
+      agentId: null,
+      adminId: null,
+      tokenVersion: (user as any).tokenVersion ?? 1,
+    });
+
+    // ---------------------------------------------------------
+    // Response
+    // ---------------------------------------------------------
+
+    const response = successResponse({
+      message: 'Authentication successful.',
+      recoveryRequired: Boolean(user.deletionDueAt),
+      testMode: isTestPhone,
+
+      user: {
+        id: user.id,
+        phone: user.phone,
+        name: user.name,
+        role: user.role,
+        customerId: user.customer?.id,
+      },
+    });
+
+    // HTTP-only authentication cookie
+    response.cookies.set({
+      name: 'jio_token',
+      value: token,
+      httpOnly: true,
+      secure: req.nextUrl.protocol === 'https:',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 7 * 24 * 60 * 60,
+    });
+
+    return response;
+  } catch (err: any) {
+    if (err instanceof AccountDeletionError) return errorResponse('ACCOUNT_UNAVAILABLE', err.message, err.status);
+    if (err instanceof CustomerRoleConflictError) {
+      return errorResponse(
+        'FORBIDDEN',
+        'This number is not available for customer sign-in.',
+        403
+      );
+    }
+
+    const errorMessage = String(err?.message || '');
+    const databaseUnavailable =
+      isDatabaseConfigurationError(err) ||
+      errorMessage.includes('Can\'t reach database server') ||
+      errorMessage.includes('Authentication failed against database server') ||
+      errorMessage.includes('P1001') ||
+      errorMessage.includes('P1000') ||
+      errorMessage.includes('[YOUR-PASSWORD]');
+
+    console.error(
+      'Verify OTP error:',
+      err?.message || err
+    );
+
+    return errorResponse(
+      databaseUnavailable ? 'DATABASE_UNAVAILABLE' : 'INTERNAL_SERVER_ERROR',
+      databaseUnavailable
+        ? 'Authentication is temporarily unavailable because the database connection is not configured or reachable. Please verify DATABASE_URL and restart the server.'
+        : 'Authentication failed.',
+      databaseUnavailable ? 503 : 500
+    );
+  }
+}

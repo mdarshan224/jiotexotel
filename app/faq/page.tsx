@@ -1,0 +1,112 @@
+import Link from '@/components/AppLink';
+import { HelpCircle, ChevronDown, ArrowRight, Phone, MessageSquare, ShieldCheck, Scale, Banknote } from 'lucide-react';
+import ScrollReveal from '@/components/ScrollReveal';
+
+export const metadata = {
+  title: 'Frequently Asked Questions (FAQ) — Junk It Out Doorstep Waste Pickup',
+  description: 'Answers to common questions about Junk It Out doorstep waste pickup in Bengaluru, material pricing, digital scale weighing, Razorpay payments, and service areas.',
+};
+
+const FAQ_ITEMS = [
+  {
+    q: 'How does Junk It Out doorstep pickup work?',
+    a: 'Simply select your location in Bengaluru, pick your waste categories (paper, plastic, metal, e-waste, household waste, etc.), add photos if available, and submit your booking. A verified agent arrives in 20–30 minutes or at your scheduled slot, weighs items on a digital scale, and collects your materials for responsible recycling.',
+  },
+  {
+    q: 'How are waste pickup prices calculated?',
+    a: 'Rates are calculated per-kilogram based on our official material price list: Material Amount = Price Per KG × Selected Weight, plus a ₹50 doorstep service charge. You can check current material rates anytime on our Price List page.',
+  },
+  {
+    q: 'How does doorstep weighing work?',
+    a: 'Our agent brings a calibrated portable digital scale to your doorstep. Each waste category is weighed separately in front of you, and actual weights are logged directly into the agent app to generate your pickup receipt.',
+  },
+  {
+    q: 'How do customer payments work via Razorpay?',
+    a: 'Your total payable amount (sum of all selected material amounts plus the ₹50 doorstep service charge) is completed securely through the integrated Razorpay Standard Checkout popup using UPI, Debit/Credit Cards, or Netbanking.',
+  },
+  {
+    q: 'What happens to the collected recyclable materials?',
+    a: 'Once doorstep collection and digital weighing are complete, our field team sorts and transports the collected materials to authorized recycling and waste-processing partners across Bengaluru.',
+  },
+  {
+    q: 'Can I cancel or reschedule my pickup?',
+    a: 'Cancellations are not available once a pickup request is placed. If no agent is assigned within 30 minutes of an ASAP booking, or within 30 minutes of the scheduled pickup start, the request closes automatically and any captured payment is refunded to its original method. Contact support if you need help with your request.',
+  },
+  {
+    q: 'What service areas does Junk It Out cover in Bengaluru?',
+    a: 'Our doorstep pickup service is currently available exclusively in two areas of Bengaluru: JP Nagar (Phases 1 to 9) and BTM Layout (1st & 2nd Stage). We are actively expanding to more zones across Bengaluru soon!',
+  },
+  {
+    q: 'What waste materials are NOT accepted?',
+    a: 'We do NOT accept hazardous chemicals, biomedical waste, explosives, radioactive substances, wet kitchen food waste, or illegal contraband.',
+  },
+  {
+    q: 'What if I disagree with the weight or rate recorded during pickup?',
+    a: 'You can request the agent to re-weigh the item immediately on the spot. If unresolved, you can raise a dispute via Customer Support in your profile dashboard for instant investigation.',
+  },
+];
+
+export default function FAQPage() {
+  return (
+    <div className="customer-page-cream min-h-[85vh]">
+      <div className="customer-page max-w-4xl space-y-8">
+      {/* HEADER */}
+      <div className="text-center max-w-2xl mx-auto space-y-2">
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-200/80">
+          <HelpCircle className="w-3.5 h-3.5" />
+          Help & Support Center
+        </span>
+        <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">
+          Frequently Asked Questions
+        </h1>
+        <p className="text-slate-600 text-xs sm:text-sm leading-relaxed">
+          Everything you need to know about doorstep waste pickups, transparent material pricing, digital scale weighing, and convenient recycling in Bengaluru.
+        </p>
+      </div>
+
+      {/* FAQ LIST */}
+      <ScrollReveal className="space-y-3">
+        {FAQ_ITEMS.map((item, idx) => (
+          <details
+            key={idx}
+            className="group bg-white rounded-xl p-4 sm:p-5 border border-slate-200/90 shadow-sm transition-all open:border-emerald-300 open:shadow-md"
+          >
+            <summary className="flex items-center justify-between font-bold text-xs sm:text-sm text-slate-900 cursor-pointer list-none select-none">
+              <span>{item.q}</span>
+              <span className="w-7 h-7 rounded-lg bg-slate-100 text-slate-600 group-open:bg-emerald-50 group-open:text-emerald-700 flex items-center justify-center shrink-0 transition-transform group-open:rotate-180">
+                <ChevronDown className="w-3.5 h-3.5" />
+              </span>
+            </summary>
+            <p className="text-xs text-slate-600 mt-3 leading-relaxed font-normal pt-3 border-t border-slate-100">
+              {item.a}
+            </p>
+          </details>
+        ))}
+      </ScrollReveal>
+
+      {/* CONTACT BANNER */}
+      <ScrollReveal className="customer-hero rounded-2xl p-6 text-center text-white shadow-md">
+        <h2 className="text-xl font-bold">Still have questions?</h2>
+        <p className="text-xs text-slate-300 max-w-md mx-auto">
+          Our Bengaluru customer support team is available 8:00 AM – 8:00 PM daily.
+        </p>
+        <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+          <Link
+            href="/contact"
+            className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs px-5 py-2.5 rounded-xl inline-flex items-center gap-2 transition-colors"
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            Contact Customer Care
+          </Link>
+          <Link
+            href="/pricing"
+            className="bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs px-5 py-2.5 rounded-xl inline-flex items-center gap-2 border border-slate-700 transition-colors"
+          >
+            View Price List <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
+        </div>
+      </ScrollReveal>
+      </div>
+    </div>
+  );
+}

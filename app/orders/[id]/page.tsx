@@ -1,0 +1,1881 @@
+"use client";
+import LivePickupTracking from '@/components/LivePickupTracking';
+import {CustomerPickupCode} from '@/components/PickupVerification';
+import AgentPickupDetail from '@/components/AgentPickupDetail';
+import OrderCallButton from '@/components/OrderCallButton';
+import CenteredModalLayer from '@/components/CenteredModalLayer';
+
+import { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
+import { useParams } from 'next/navigation';
+import { useRouter } from '@/lib/browserNavigation';
+import {
+  Clock,
+  MapPin,
+  CheckCircle,
+  Truck,
+  PhoneCall,
+  Scale,
+  CreditCard,
+  Download,
+  AlertCircle,
+  Star,
+  RefreshCw,
+  ShieldCheck,
+  ShieldAlert,
+  LogIn,
+  WifiOff,
+  FileText,
+  Camera,
+  XCircle,
+  X,
+} from "lucide-react";
+import CustomerOtpLogin from "@/components/CustomerOtpLogin";
+import { canCustomerContactAgent, isPickupCompletedStatus } from "@/lib/orders/lifecycle";
+import InteractiveMap from "@/components/InteractiveMap";
+import { getSecurePhotoUrl } from "@/lib/utils/photoUrl";
+import { getApiErrorMessage } from "@/lib/utils/apiErrorMessage";
+import { preparePortalCheckout as loadRazorpayScript, createPortalCheckout } from '@/lib/portalCheckout';
+import {
+  isActiveTrackingStatus,
+  isTerminalOrderStatus,
+  parseAgentLocation,
+  type AgentLocationSnapshot,
+} from "@/lib/trackingLocation";
+import {
+  isReceiptEligible,
+  downloadReceiptPdf,
+  getOrderTaxBreakdown,
+} from "@/lib/receiptPdf";
+
+// If the last location is older than this, show "location unavailable".
+const STALE_AFTER_MS = 30_000;
+
+const DEFAULT_PICKUP_LAT = 12.9077;
+const DEFAULT_PICKUP_LNG = 77.5854;
+
+function ScaleProofEvidence({
+  weightRecord,
+  orderId,
+}: {
+  weightRecord: any;
+  orderId: string;
+}) {
+  const [imageError, setImageError] = useState(false);
+  const rawPhotoUrl =
+    typeof weightRecord?.scalePhotoUrl === 'string'
+      ? weightRecord.scalePhotoUrl.trim()
+      : null;
+  const secureUrl = rawPhotoUrl ? getSecurePhotoUrl(rawPhotoUrl, orderId) : null;
+  const hasValidPhoto = Boolean(secureUrl && !imageError);
+
+  const formattedDate = weightRecord?.createdAt
+    ? new Date(weightRecord.createdAt).toLocaleString(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      })
+    : null;
+
+  return (
+    <div className="pt-4 border-t border-slate-100 bg-slate-50 p-4 rounded-2xl">
+      <h4 className="text-xs font-bold text-slate-700 mb-2.5 flex items-center gap-1.5">
+        <Scale className="w-4 h-4 text-emerald-600" />
+        Verified Weighing Scale Photo Proof
+      </h4>
+
+      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4">
+        {hasValidPhoto ? (
+          <a
+            href={secureUrl!}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block group shrink-0 relative"
+            title="Click to view full photograph"
+          >
+            <img
+              src={secureUrl!}
+              alt="Weighing Scale Proof"
+              loading="lazy"
+              decoding="async"
+              onError={() => setImageError(true)}
+              className="w-24 h-24 sm:w-28 sm:h-28 rounded-xl object-cover border border-slate-300 shadow-sm group-hover:scale-105 group-hover:shadow-md transition-all duration-200 bg-slate-100"
+            />
+            <span className="absolute bottom-1 right-1 bg-slate-900/70 text-white text-[10px] px-1.5 py-0.5 rounded backdrop-blur-xs pointer-events-none">
+              View
+            </span>
+          </a>
+        ) : (
+          <div
+            role="status"
+            aria-label="Doorstep scale verification note"
+            className="w-full sm:w-auto flex items-center gap-3 p-3 rounded-xl border border-dashed border-emerald-300 bg-emerald-50/70 shrink-0"
+          >
+            <div className="w-10 h-10 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-xs font-bold text-slate-800">
+                Doorstep Scale Verification
+              </p>
+              <p className="text-[11px] text-slate-500">
+                {imageError
+                  ? 'Photo proof temporarily unavailable.'
+                  : 'Calibrated digital scale verification performed on site.'}
+              </p>
+            </div>
+          </div>
+        )}
+
+        <div className="text-xs text-slate-600 space-y-1">
+          <p className="font-bold text-slate-900 flex items-center gap-1">
+            <CheckCircle className="w-3.5 h-3.5 text-emerald-600 inline" />
+            Recorded on Digital Scale
+          </p>
+
+          {formattedDate && (
+            <p className="text-slate-500 text-[11px]">
+              Recorded at: {formattedDate}
+            </p>
+          )}
+
+          <p className="text-emerald-700 font-semibold text-[11px]">
+            Verified by agent on site.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export const isCustomerCancellable = (_status?: string): boolean => false;
+
+export default function OrderTrackingPage() {
+  const params = useParams();
+  const router = useRouter();
+
+  const rawParamId = params?.id;
+  const id = typeof rawParamId === 'string'
+    ? decodeURIComponent(rawParamId).trim()
+    : (Array.isArray(rawParamId) ? decodeURIComponent(rawParamId[0]).trim() : '');
+
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const [order, setOrder] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<number | 'NETWORK_ERROR' | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
+  const [loginOpen, setLoginOpen] = useState(false);
+
+  const [agentLocation, setAgentLocation] = useState<AgentLocationSnapshot | null>(
+    null,
+  );
+
+  const [now, setNow] = useState<number>(Date.now());
+  const [sseConnected, setSseConnected] = useState(false);
+
+  const [showRatingModal, setShowRatingModal] = useState(false);
+
+  const [rating, setRating] = useState(5);
+  const [reviewComment, setReviewComment] = useState("");
+
+  const [complaintText, setComplaintText] = useState("");
+  const [showComplaintModal, setShowComplaintModal] = useState(false);
+  const [complaintSubmitting, setComplaintSubmitting] = useState(false);
+  const [complaintError, setComplaintError] = useState<string | null>(null);
+  const [complaintSuccess, setComplaintSuccess] = useState(false);
+  const complaintInFlightRef = useRef(false);
+
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [cancelReason, setCancelReason] = useState("Need to reschedule for another time");
+  const [customCancelReason, setCustomCancelReason] = useState("");
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const isCancellingRef = useRef(false);
+
+  const [paymentLoading, setPaymentLoading] = useState(false);
+  const [paymentMessage, setPaymentMessage] = useState<string | null>(null);
+  const [downloadingReceipt, setDownloadingReceipt] = useState(false);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
+
+  const handleDownloadReceipt = () => {
+    if (!order) return;
+    try {
+      setDownloadingReceipt(true);
+      setReceiptError(null);
+      downloadReceiptPdf(order);
+    } catch (err: any) {
+      console.error('Receipt download error:', err);
+      setReceiptError(err?.message || 'Failed to download receipt PDF.');
+    } finally {
+      setDownloadingReceipt(false);
+    }
+  };
+
+  // Lock body scroll and handle Escape key while active modal is open
+  useEffect(() => {
+    if (!showCancelModal && !showComplaintModal && !showRatingModal) return;
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (showCancelModal && !cancelling) setShowCancelModal(false);
+        if (showComplaintModal) setShowComplaintModal(false);
+        if (showRatingModal) setShowRatingModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = originalOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showCancelModal, showComplaintModal, showRatingModal, cancelling]);
+
+  // Always holds the latest order so SSE handlers
+  // never read stale state.
+  const orderRef = useRef<any>(null);
+  const isPayingRef = useRef(false);
+  const orderRequestRef = useRef(0);
+  const orderRequestControllerRef = useRef<{
+    orderId: string;
+    controller: AbortController;
+  } | null>(null);
+
+  const fetchOrderDetails = async (isInitial = false) => {
+    if (!id) return;
+    const inFlight = orderRequestControllerRef.current;
+    if (inFlight?.orderId === id) return;
+    inFlight?.controller.abort();
+
+    const requestId = ++orderRequestRef.current;
+    const controller = new AbortController();
+    orderRequestControllerRef.current = { orderId: id, controller };
+    try {
+      const res = await fetch(`/api/orders/${encodeURIComponent(id)}`, {
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+
+      const data = await res.json().catch(() => null);
+
+      // A slow older poll must not overwrite a response received later.
+      if (controller.signal.aborted || requestId !== orderRequestRef.current) return;
+
+      if (res.ok && data?.success && data?.data && typeof data.data === "object") {
+        const o = data.data;
+
+        orderRef.current = o;
+        setOrder(o);
+        setErrorMsg(null);
+        setErrorStatus(null);
+        setErrorCode(null);
+
+        const assignedAgentId = o.agentId ?? o.agent?.id;
+        if (assignedAgentId && o.id) {
+          const latest = o.locations?.find(
+            (location: any) =>
+              String(location.orderId) === String(o.id) &&
+              String(location.agentId) === String(assignedAgentId),
+          );
+          const snapshot = parseAgentLocation(
+            latest,
+            String(o.id),
+            String(assignedAgentId),
+            "poll",
+          );
+
+          if (snapshot) {
+            setAgentLocation((previous) =>
+              previous?.orderId === snapshot.orderId &&
+                previous.agentId === snapshot.agentId &&
+                previous.updatedAt > snapshot.updatedAt
+                ? previous
+                : snapshot,
+            );
+          } else {
+            setAgentLocation((previous) =>
+              previous?.orderId === String(o.id) &&
+                previous.agentId === String(assignedAgentId)
+                ? previous
+                : null,
+            );
+          }
+        } else {
+          setAgentLocation(null);
+        }
+      } else if (isInitial) {
+        setErrorStatus(res.status);
+        setErrorCode(data?.error?.code ?? null);
+        setErrorMsg(
+          getApiErrorMessage(data, `Unable to load order details for #${id}`),
+        );
+      }
+    } catch (e) {
+      if (controller.signal.aborted || requestId !== orderRequestRef.current) return;
+      console.error(e);
+
+      if (isInitial) {
+        setErrorStatus('NETWORK_ERROR');
+        setErrorMsg("Network connection error while fetching order details.");
+      }
+    } finally {
+      if (orderRequestControllerRef.current?.controller === controller) {
+        orderRequestControllerRef.current = null;
+      }
+      if (isInitial) {
+        setLoading(false);
+      }
+    }
+  };
+
+  // Keep ref synchronized with latest order.
+  useEffect(() => {
+    orderRef.current = order;
+  }, [order]);
+
+  /*
+   * Clock tick.
+   *
+   * This makes the stale-location message update
+   * automatically every 5 seconds.
+   */
+  useEffect(() => {
+    if (!agentLocation || !isActiveTrackingStatus(order?.status)) return;
+    const t = setInterval(() => {
+      setNow(Date.now());
+    }, 5000);
+
+    return () => clearInterval(t);
+  }, [Boolean(agentLocation), order?.status]);
+
+  /*
+   * Preload Razorpay when payment is needed.
+   */
+  useEffect(() => {
+    if (
+      order && order.viewerRole !== 'AGENT' &&
+      order.financialDirection === "CUSTOMER_PAYS" &&
+      order.paymentStatus !== "CAPTURED"
+    ) {
+      loadRazorpayScript().catch(() => { });
+    }
+  }, [order]);
+
+  /*
+   * Initial load + fallback polling for deployments where SSE is unavailable.
+   */
+  useEffect(() => {
+    fetchOrderDetails(true);
+
+    const intervalMs = sseConnected ? 25_000 : 8_000;
+    const pollInterval = setInterval(() => {
+      if (isTerminalOrderStatus(orderRef.current?.status)) {
+        return;
+      }
+      fetchOrderDetails();
+    }, intervalMs);
+
+    // Keep requests scoped to the ID whose tracking page created them.
+    // An ID change aborts its current fetch and invalidates its response.
+    return () => {
+      clearInterval(pollInterval);
+      const inFlight = orderRequestControllerRef.current;
+      if (inFlight?.orderId === id) {
+        inFlight.controller.abort();
+        orderRequestControllerRef.current = null;
+        orderRequestRef.current += 1;
+      }
+    };
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, sseConnected]);
+
+  /*
+   * CUSTOMER REALTIME ORDER + AGENT LOCATION STREAM
+   *
+   * Opened with the order's real database id (not the URL param,
+   * which may be an order number), once the order has loaded.
+   */
+  const orderDbId: string | undefined = order?.id;
+  const isTerminal = isTerminalOrderStatus(order?.status);
+
+  useEffect(() => {
+    if (!orderDbId || isTerminal || order?.viewerRole === 'AGENT') {
+      setSseConnected(false);
+      return;
+    }
+
+    let closed = false;
+
+    const eventSource = new EventSource(
+      `/api/customer/stream?orderId=${encodeURIComponent(orderDbId)}`,
+    );
+
+    console.log(
+      "[tracking] Customer SSE connection started for order:",
+      orderDbId,
+    );
+
+    eventSource.addEventListener("connected", (e: MessageEvent) => {
+      if (closed) return;
+      setSseConnected(true);
+      console.log("[tracking] Customer SSE connected:", e.data);
+    });
+
+    /*
+     * AGENT ASSIGNED
+     */
+    eventSource.addEventListener("AGENT_ASSIGNED", (e: MessageEvent) => {
+      try {
+        const payload = JSON.parse(e.data);
+
+        if (String(payload.orderId) === String(orderDbId)) {
+          console.log("[tracking] Agent assigned event received");
+
+          fetchOrderDetails();
+        }
+      } catch (err) {
+        console.error("[tracking] Failed to process AGENT_ASSIGNED:", err);
+      }
+    });
+
+    /*
+     * ORDER UPDATED
+     */
+    eventSource.addEventListener("ORDER_UPDATED", (e: MessageEvent) => {
+      try {
+        const updated = JSON.parse(e.data);
+
+        if (String(updated.id ?? updated.orderId) === String(orderDbId)) {
+          console.log("[tracking] Order updated event received");
+
+          fetchOrderDetails();
+        }
+      } catch (err) {
+        console.error("[tracking] Failed to process ORDER_UPDATED:", err);
+      }
+    });
+
+    /*
+     * LIVE AGENT LOCATION
+     *
+     * This is the main Jira Task-1 fix.
+     */
+    eventSource.addEventListener(
+      "AGENT_LOCATION_UPDATED",
+      (e: MessageEvent) => {
+        try {
+          const loc = JSON.parse(e.data);
+
+          const current = orderRef.current;
+
+          if (!current) {
+            console.debug("[tracking] Ignored: order not loaded yet");
+            return;
+          }
+
+          /*
+           * Only show agent location while the
+           * order is actively being tracked.
+           */
+          if (!isActiveTrackingStatus(current.status)) {
+            console.debug(
+              "[tracking] Ignored: inactive status",
+              current.status,
+            );
+            return;
+          }
+
+          /*
+           * Verify that the location belongs to THIS order.
+           */
+          /*
+           * Verify that the location belongs to the agent assigned
+           * to THIS order. Falls back to order.agent.id when the
+           * order API does not return a top-level agentId.
+           */
+          const assignedAgentId = current.agentId ?? current.agent?.id;
+          if (!assignedAgentId) {
+            console.debug("[tracking] Ignored: order has no assigned agent");
+            return;
+          }
+
+          const snapshot = parseAgentLocation(
+            loc,
+            String(current.id),
+            String(assignedAgentId),
+            "sse",
+          );
+          if (!snapshot) {
+            console.debug("[tracking] Ignored: location did not match this order/agent or was invalid");
+            return;
+          }
+
+          /*
+           * SUCCESS: update the customer map immediately.
+           */
+          console.log("[tracking] LIVE AGENT LOCATION RECEIVED", {
+            orderId: loc.orderId,
+            agentId: loc.agentId,
+            lat: snapshot.lat,
+            lng: snapshot.lng,
+          });
+
+          setAgentLocation((previous) => {
+            if (
+              previous?.orderId === snapshot.orderId &&
+              previous.agentId === snapshot.agentId &&
+              previous.updatedAt > snapshot.updatedAt
+            ) return previous;
+            return snapshot;
+          });
+        } catch (err) {
+          console.error("[tracking] Failed to process location event:", err);
+        }
+      },
+    );
+
+    eventSource.onerror = (error) => {
+      if (!closed) setSseConnected(false);
+      console.warn(
+        "[tracking] Customer SSE connection error. Browser will attempt to reconnect.",
+        error,
+      );
+    };
+
+    return () => {
+      closed = true;
+      setSseConnected(false);
+      eventSource.close();
+    };
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderDbId, isTerminal]);
+
+  if (loading) {
+    return (
+      <div className="customer-page-cream">
+      <div className="customer-page max-w-5xl space-y-6">
+        <div className="shimmer-box h-28 rounded-3xl w-full" />
+
+        <div className="shimmer-box h-24 rounded-3xl w-full" />
+
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+          <div className="md:col-span-5 shimmer-box h-64 rounded-3xl w-full" />
+
+          <div className="md:col-span-7 shimmer-box h-64 rounded-3xl w-full" />
+        </div>
+      </div>
+      </div>
+    );
+  }
+
+  if (errorMsg || !order) {
+    const isUnauthorized = errorStatus === 401 || errorCode === 'UNAUTHORIZED';
+    const isForbidden = errorStatus === 403 || errorCode === 'FORBIDDEN';
+    const isNotFound = errorStatus === 404 || errorCode === 'ORDER_NOT_FOUND';
+    const isNetworkError = errorStatus === 'NETWORK_ERROR';
+    const isServerError =
+      (typeof errorStatus === 'number' && errorStatus >= 500) ||
+      errorCode === 'INTERNAL_SERVER_ERROR' ||
+      errorCode === 'DATABASE_UNAVAILABLE';
+
+    let title = "Order Access Restricted";
+    let message = errorMsg || "Unable to load this pickup order.";
+    let iconBg = "bg-rose-100 text-rose-600";
+    let IconComponent = AlertCircle;
+
+    if (isUnauthorized) {
+      title = "Sign In Required";
+      message = "Please sign in with your mobile number to view this pickup order and live tracking.";
+      iconBg = "bg-amber-100 text-amber-600";
+      IconComponent = ShieldAlert;
+    } else if (isNotFound) {
+      title = "Order Not Found";
+      message = errorMsg || `We couldn't find pickup order #${id}. Please check the order number and try again.`;
+      iconBg = "bg-slate-100 text-slate-600";
+      IconComponent = AlertCircle;
+    } else if (isForbidden) {
+      title = "Order Access Restricted";
+      message = errorMsg || "You are not authorized to view details for this order. It belongs to a different account.";
+      iconBg = "bg-rose-100 text-rose-600";
+      IconComponent = ShieldAlert;
+    } else if (isNetworkError) {
+      title = "Connection Error";
+      message = "Unable to connect to the server. Please check your internet connection and try again.";
+      iconBg = "bg-amber-100 text-amber-600";
+      IconComponent = WifiOff;
+    } else if (isServerError) {
+      title = "Unable to Load Order";
+      message = errorMsg || "A temporary server error occurred while retrieving order details. Please try again.";
+      iconBg = "bg-rose-100 text-rose-600";
+      IconComponent = AlertCircle;
+    }
+
+    return (
+      <div className="max-w-md mx-auto px-4 py-16 text-center space-y-4">
+        <div className={`w-16 h-16 ${iconBg} rounded-full flex items-center justify-center mx-auto`}>
+          <IconComponent className="w-8 h-8" />
+        </div>
+
+        <div>
+          <h2 className="text-xl font-black text-slate-900 mb-1">
+            {title}
+          </h2>
+
+          <p className="text-xs text-slate-600 leading-relaxed font-medium">
+            {message}
+          </p>
+        </div>
+
+        <div className="pt-2 flex flex-wrap justify-center gap-3">
+          {isUnauthorized && (
+            <button
+              onClick={() => setLoginOpen(true)}
+              className="btn-glossy-primary rounded-full text-xs font-bold px-6 py-3 shadow-md uppercase tracking-wider flex items-center gap-1.5"
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              Sign In with OTP
+            </button>
+          )}
+
+          {(isServerError || isNetworkError) && (
+            <button
+              onClick={() => {
+                setLoading(true);
+                setErrorMsg(null);
+                setErrorStatus(null);
+                setErrorCode(null);
+                void fetchOrderDetails(true);
+              }}
+              className="btn-glossy-primary rounded-full text-xs font-bold px-6 py-3 shadow-md uppercase tracking-wider flex items-center gap-1.5"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Retry
+            </button>
+          )}
+
+          <button
+            onClick={() => router.push("/my-pickups")}
+            className="btn-glossy-primary rounded-full text-xs font-bold px-6 py-3 shadow-md uppercase tracking-wider"
+          >
+            My Pickups
+          </button>
+
+          <button
+            onClick={() => router.push("/")}
+            className="btn-glossy-secondary rounded-full text-xs font-bold px-6 py-3 border border-slate-300 uppercase tracking-wider"
+          >
+            Return Home
+          </button>
+        </div>
+
+        <CustomerOtpLogin
+          open={loginOpen}
+          onClose={() => setLoginOpen(false)}
+          onAuthenticated={() => {
+            setLoginOpen(false);
+            setLoading(true);
+            setErrorMsg(null);
+            setErrorStatus(null);
+            setErrorCode(null);
+            void fetchOrderDetails(true);
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (order.viewerRole === 'AGENT') return <AgentPickupDetail order={order} />;
+
+  const statuses = [
+    {
+      key: "BOOKING_RECEIVED",
+      label: "Looking for a pickup agent",
+    },
+    {
+      key: "AGENT_ASSIGNED",
+      label: "Agent Assigned",
+    },
+    {
+      key: "AGENT_ACCEPTED",
+      label: "Agent Accepted",
+    },
+    {
+      key: "AGENT_ON_WAY",
+      label: "Agent On Way",
+    },
+    {
+      key: "AGENT_ARRIVED",
+      label: "Agent Arrived",
+    },
+    {
+      key: "WEIGHING",
+      label: "Weighing Waste",
+    },
+    {
+      key: "PICKUP_COMPLETED",
+      label: "Pickup Completed",
+    },
+    {
+      key: "SETTLEMENT_COMPLETED",
+      label: "Settlement Done",
+    },
+  ];
+
+  const getStatusStepIndex = (status: string) => {
+    switch (status) {
+      case "BOOKING_RECEIVED":
+        return 0;
+
+      case "AGENT_BEING_ASSIGNED":
+      case "AGENT_ASSIGNED":
+        return 1;
+
+      case "AGENT_ACCEPTED":
+        return 2;
+
+      case "AGENT_ON_WAY":
+        return 3;
+
+      case "AGENT_ARRIVED":
+      case "WASTE_VERIFICATION":
+        return 4;
+
+      case "WEIGHING":
+        return 5;
+
+      case "PICKUP_COMPLETED":
+        return 6;
+
+      case "SETTLEMENT_COMPLETED":
+        return 7;
+
+      case "CANCELLED":
+        return -1;
+
+      default:
+        return 0;
+    }
+  };
+
+  const currentStatusIdx = getStatusStepIndex(order.status);
+
+  const locationStale =
+    !agentLocation || now - agentLocation.updatedAt > STALE_AFTER_MS;
+
+  const pickupLat = order.address?.lat ?? DEFAULT_PICKUP_LAT;
+
+  const pickupLng = order.address?.lng ?? DEFAULT_PICKUP_LNG;
+
+  const getMapStatusBadge = () => {
+    const status = order?.status;
+    if (status === "BOOKING_RECEIVED" || status === "AGENT_BEING_ASSIGNED") {
+      return (
+        <span className="text-[10px] font-bold bg-amber-100 text-amber-900 px-2.5 py-0.5 rounded-full border border-amber-200">
+          Waiting for agent assignment
+        </span>
+      );
+    }
+    if (status === "AGENT_ASSIGNED" || status === "AGENT_ACCEPTED") {
+      return (
+        <span className="text-[10px] font-bold bg-blue-100 text-blue-800 px-2.5 py-0.5 rounded-full border border-blue-200">
+          Agent assigned
+        </span>
+      );
+    }
+    if (status === "AGENT_ON_WAY" || status === "AGENT_ARRIVED" || status === "WASTE_VERIFICATION") {
+      if (agentLocation) {
+        return (
+          <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full animate-pulse border border-emerald-200">
+            ● Live
+          </span>
+        );
+      }
+      return (
+        <span className="text-[10px] font-bold bg-amber-100 text-amber-900 px-2.5 py-0.5 rounded-full border border-amber-200">
+          Waiting for agent location
+        </span>
+      );
+    }
+    if (status === "WEIGHING") {
+      return (
+        <span className="text-[10px] font-bold bg-indigo-100 text-indigo-800 px-2.5 py-0.5 rounded-full border border-indigo-200">
+          Weighing in progress
+        </span>
+      );
+    }
+    if (status === "PICKUP_COMPLETED" || status === "SETTLEMENT_COMPLETED") {
+      return (
+        <span className="text-[10px] font-bold bg-slate-100 text-slate-700 px-2.5 py-0.5 rounded-full border border-slate-200">
+          Pickup completed
+        </span>
+      );
+    }
+    return (
+      <span className="text-[10px] font-bold bg-slate-100 text-slate-700 px-2.5 py-0.5 rounded-full border border-slate-200">
+        Waiting for agent assignment
+      </span>
+    );
+  };
+
+  const handlePayNow = async () => {
+    // Synchronous duplicate click prevention
+    if (isPayingRef.current || paymentLoading) return;
+    isPayingRef.current = true;
+
+    try {
+      if (order?.paymentStatus === "CAPTURED") {
+        setPaymentMessage("This order has already been paid and verified.");
+        isPayingRef.current = false;
+        return;
+      }
+
+      setPaymentLoading(true);
+      setPaymentMessage(null);
+
+      const scriptPromise = loadRazorpayScript();
+
+      const createResponse = await fetch("/api/payments/create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          orderId: order.id,
+        }),
+      });
+
+      const createData = await createResponse.json();
+
+      if (!createResponse.ok || !createData.success) {
+        throw new Error(createData.message || "Unable to start payment.");
+      }
+
+      // If the payment was already reconciled or previously confirmed
+      if (createData.alreadyPaid) {
+        if (typeof window !== "undefined") {
+          sessionStorage.removeItem("jio_pending_order");
+        }
+        setPaymentMessage("Payment verified and confirmed.");
+        isPayingRef.current = false;
+        setPaymentLoading(false);
+        fetchOrderDetails();
+        return;
+      }
+
+      const scriptLoaded = await scriptPromise;
+
+      if (!scriptLoaded) {
+        throw new Error("Unable to load Razorpay Checkout script.");
+      }
+
+      const checkoutOptions: any = {
+        key: createData.data.key,
+        amount: Math.round(createData.data.amount * 100),
+        currency: createData.data.currency,
+        name: createData.data.name,
+        description: createData.data.description,
+        image:
+          typeof window !== "undefined"
+            ? `${window.location.origin}/logo.png`
+            : "/logo.png",
+        order_id: createData.data.gatewayOrderId,
+
+        handler: async (response: any) => {
+          try {
+            const verifyResponse = await fetch("/api/payments/verify", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                orderId: order.id,
+                ...response,
+              }),
+            });
+
+            const verifyData = await verifyResponse.json();
+
+            if (!verifyResponse.ok || !verifyData.success) {
+              throw new Error(
+                verifyData.message || "Payment verification failed.",
+              );
+            }
+
+            if (typeof window !== "undefined") {
+              sessionStorage.removeItem("jio_pending_order");
+            }
+            setPaymentMessage("Payment verified successfully.");
+            fetchOrderDetails();
+          } catch (verifyErr) {
+            setPaymentMessage(
+              verifyErr instanceof Error
+                ? verifyErr.message
+                : "Payment verification error.",
+            );
+          } finally {
+            isPayingRef.current = false;
+            setPaymentLoading(false);
+          }
+        },
+
+        modal: {
+          ondismiss: () => {
+            isPayingRef.current = false;
+            setPaymentLoading(false);
+            setPaymentMessage("Payment was cancelled or dismissed. You can retry whenever you are ready.");
+          },
+        },
+
+        theme: {
+          color: "#059669",
+        },
+      };
+
+      const checkout = createPortalCheckout(checkoutOptions);
+
+      checkout.on("payment.failed", (response: any) => {
+        const desc =
+          response?.error?.description ||
+          response?.error?.reason ||
+          "Transaction was declined.";
+        setPaymentMessage(`Payment failed: ${desc} You can retry whenever you are ready.`);
+        isPayingRef.current = false;
+        setPaymentLoading(false);
+      });
+
+      checkout.open();
+    } catch (e) {
+      setPaymentMessage(
+        e instanceof Error ? e.message : "Payment could not be started.",
+      );
+      isPayingRef.current = false;
+      setPaymentLoading(false);
+    }
+  };
+
+  const handleSubmitReview = async () => {
+    try {
+      await fetch("/api/reviews", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          orderId: order.id,
+          customerId: order.customerId,
+          agentId: order.agentId,
+          rating,
+          comment: reviewComment,
+        }),
+      });
+
+      setShowRatingModal(false);
+
+      alert("Thank you for rating your pickup experience!");
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSubmitComplaint = async () => {
+    if (!complaintText.trim() || complaintInFlightRef.current || complaintSubmitting) return;
+    complaintInFlightRef.current = true;
+    setComplaintSubmitting(true);
+    setComplaintError(null);
+
+    try {
+      const res = await fetch("/api/complaints", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          orderId: order.id,
+          category: "WEIGHT_DISPUTE",
+          description: complaintText.trim(),
+        }),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (res.ok && data?.success) {
+        setShowComplaintModal(false);
+        setComplaintText("");
+        setComplaintError(null);
+        setComplaintSuccess(true);
+      } else {
+        const errorMsg = data?.message || "Failed to report issue. Please try again.";
+        setComplaintError(errorMsg);
+      }
+    } catch (e: any) {
+      console.error(e);
+      const errorMsg = "Failed to report issue. Please try again.";
+      setComplaintError(errorMsg);
+    } finally {
+      complaintInFlightRef.current = false;
+      setComplaintSubmitting(false);
+    }
+  };
+
+  const handleCancelOrder = async () => {
+    if (!order?.id || isCancellingRef.current || cancelling) return;
+    isCancellingRef.current = true;
+    setCancelling(true);
+    setCancelError(null);
+
+    const finalReason =
+      cancelReason === "Other"
+        ? (customCancelReason.trim() || "Order cancelled by customer")
+        : customCancelReason.trim()
+          ? `${cancelReason}: ${customCancelReason.trim()}`
+          : cancelReason;
+
+    try {
+      const res = await fetch(`/api/orders/${order.id}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ cancellationReason: finalReason }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.success) {
+        setShowCancelModal(false);
+        setCustomCancelReason("");
+        setOrder((prev: any) =>
+          prev
+            ? {
+                ...prev,
+                status: 'CANCELLED',
+                paymentStatus: prev.paymentStatus === 'CAPTURED' ? 'REFUND_PENDING' : prev.paymentStatus,
+              }
+            : prev
+        );
+        void fetchOrderDetails();
+      } else {
+        setCancelError(
+          getApiErrorMessage(
+            data,
+            "Failed to cancel order. Please verify order status and try again."
+          )
+        );
+      }
+    } catch {
+      setCancelError("Network error while submitting cancellation request.");
+    } finally {
+      isCancellingRef.current = false;
+      setCancelling(false);
+    }
+  };
+
+  return (
+    <div className="customer-page-cream">
+    <div className="customer-page max-w-5xl space-y-6">
+      {/* ORDER HEADER */}
+      <div className="customer-hero relative overflow-hidden rounded-[2rem] p-6 text-white shadow-xl md:p-8 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-extrabold bg-emerald-500 text-slate-950 px-2.5 py-0.5 rounded-full uppercase">
+              Pickup Order
+            </span>
+
+            <span className="text-xs text-slate-400 font-mono">
+              {order.orderNumber}
+            </span>
+          </div>
+
+          <h1 className="text-2xl font-black tracking-tight">
+            {order.address?.area || "South Bengaluru"} Pickup
+          </h1>
+
+          <p className="text-xs text-slate-400 mt-1">
+            Booked on {new Date(order.createdAt).toLocaleString()}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+          {isCustomerCancellable(order.status) && (
+            <button
+              type="button"
+              onClick={() => {
+                setCancelError(null);
+                setShowCancelModal(true);
+              }}
+              className="btn-glossy-danger rounded-full text-xs font-bold px-4 py-2 shadow-sm flex items-center gap-1.5 min-h-[38px] touch-manipulation cursor-pointer shrink-0"
+              aria-label="Cancel Order"
+            >
+              <XCircle className="w-4 h-4" />
+              Cancel Order
+            </button>
+          )}
+
+          <span className="text-xs font-bold bg-slate-800 border border-slate-700 text-emerald-400 px-3 py-1.5 rounded-xl shrink-0">
+            ETA:{" "}
+            {order.status === "CANCELLED"
+              ? "Cancelled"
+              : isTerminalOrderStatus(order.status)
+                ? "Completed"
+                : order.agentId ? "See live map" : "Finding agent"}
+          </span>
+
+          <button
+            type="button"
+            onClick={() => fetchOrderDetails()}
+            className="p-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-slate-300 min-h-[38px] min-w-[38px] flex items-center justify-center shrink-0 cursor-pointer"
+            title="Refresh order details"
+            aria-label="Refresh order details"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* CANCELLED ALERT BANNER */}
+      <CustomerPickupCode orderId={order.id} status={order.status} />
+      {['BOOKING_RECEIVED','AGENT_BEING_ASSIGNED'].includes(order.status)&&!order.agentId&&<section className="rounded-3xl bg-emerald-50 border border-emerald-200 p-5 space-y-2"><h2 className="font-bold text-emerald-950 text-lg">Looking for a pickup agent</h2><p className="text-sm text-emerald-900">Your request is placed. Cancellations are unavailable after booking.</p>{order.assignmentDeadlineAt&&<p className="text-sm text-emerald-900">If no agent is assigned by {new Date(order.assignmentDeadlineAt).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'})} IST, the pickup closes automatically and any captured payment is refunded to its original method.</p>}</section>}
+      <a href={`/customer/assistant?orderId=${encodeURIComponent(order.id)}`} className="block rounded-2xl p-4 bg-white border border-emerald-200 text-emerald-800 font-bold">Need help with this pickup? Chat with support →</a>
+
+      {order.status === "CANCELLED" && (
+        <div className="bg-rose-50 border border-rose-200 rounded-3xl p-5 text-rose-900 space-y-1">
+          <div className="flex items-center gap-2 font-bold text-sm">
+            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
+
+            <span>Pickup Order Cancelled</span>
+          </div>
+
+          <p className="text-xs text-rose-700">
+            {order.cancellationReason || "This pickup request was cancelled."}
+          </p>
+          {order.paymentStatus === 'REFUND_PENDING' && (
+            <p className="text-xs font-bold text-amber-800 mt-2 bg-amber-50 p-2.5 rounded-xl border border-amber-200">
+              Refund initiated: Your payment of ₹{(order.finalAmount || order.estimatedTotal || 0).toFixed(2)} is being processed for return to your original payment method.
+            </p>
+          )}
+          {order.paymentStatus === 'REFUNDED' && (
+            <p className="text-xs font-bold text-emerald-800 mt-2 bg-emerald-50 p-2.5 rounded-xl border border-emerald-200">
+              Payment of ₹{(order.finalAmount || order.estimatedTotal || 0).toFixed(2)} was refunded successfully.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* STATUS PROGRESS TIMELINE */}
+      <div className="customer-surface rounded-[1.75rem] p-6 space-y-4">
+        <h3 className="text-sm font-bold text-slate-900">
+          Pickup Lifecycle Progress
+        </h3>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-8 gap-2 text-center">
+          {statuses.map((st, idx) => {
+            const isDone = currentStatusIdx >= idx && currentStatusIdx !== -1;
+
+            const isCurrent = currentStatusIdx === idx;
+
+            return (
+              <div
+                key={st.key}
+                className={`p-2 rounded-xl border text-[11px] font-bold transition-all duration-500 ${isCurrent
+                    ? "bg-emerald-600 text-white border-emerald-600 shadow-md scale-105 pulse-emerald-glow"
+                    : isDone
+                      ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                      : "bg-slate-50 text-slate-400 border-slate-200"
+                  }`}
+              >
+                <span className="block text-[10px] opacity-75">
+                  Step {idx + 1}
+                </span>
+
+                <span className="leading-tight block mt-0.5">{st.label}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* TIMESTAMPED STATUS HISTORY */}
+        {order.statusHistory && order.statusHistory.length > 0 && (
+          <div className="pt-3 border-t border-slate-100 space-y-2">
+            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+              Timeline Activity Log
+            </h4>
+
+            <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+              {order.statusHistory.map((h: any) => (
+                <div
+                  key={h.id}
+                  className="flex items-center justify-between text-[11px] bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100"
+                >
+                  <span className="font-bold text-slate-800">
+                    ● {h.newStatus.replace(/_/g, " ")}
+                    {h.notes ? (
+                      <span className="font-normal text-slate-500 ml-1.5">
+                        ({h.notes})
+                      </span>
+                    ) : null}
+                  </span>
+
+                  <span className="text-[10px] text-slate-400 shrink-0 ml-2">
+                    {new Date(h.timestamp).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ASSIGNED AGENT & LIVE MAP */}
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+        {/* Agent Info Card */}
+        <div className="customer-surface md:col-span-5 rounded-[1.75rem] p-6 space-y-4">
+          <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+            Assigned Pickup Agent
+          </h3>
+
+          {order.agent ? (
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="w-14 h-14 rounded-2xl bg-emerald-100 text-emerald-800 flex items-center justify-center text-xl font-bold border border-emerald-200">
+                  🚚
+                </div>
+
+                <div>
+                  <h4 className="font-extrabold text-slate-900 text-base">
+                    {order.agent.user.name}
+                  </h4>
+
+                  <p className="text-xs text-slate-600 font-semibold">
+                    {order.agent.vehicleType}
+                  </p>
+
+                  <div className="flex items-center gap-2 mt-1">
+
+                    <span className="text-xs font-bold text-amber-600 flex items-center gap-0.5">
+                      <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-500" />
+
+                      {order.agent.rating}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {canCustomerContactAgent(order.status) && order.agent.user?.phone ? (
+                <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
+                  <OrderCallButton orderId={order.id} label="Call agent" fallbackPhone={order.agent.user.phone} className="w-full bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold text-sm py-3 rounded-xl border border-emerald-200 disabled:opacity-50" />
+                </div>
+              ) : isPickupCompletedStatus(order.status) ? (
+                <div className="pt-3 border-t border-slate-100 flex items-center justify-center">
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    Pickup completed by verified agent
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="p-4 bg-amber-50 rounded-2xl border border-amber-200 text-amber-900 text-xs font-semibold">
+              Finding nearest available agent in South Bengaluru...
+            </div>
+          )}
+
+          {/* Pickup Address */}
+          <div className="pt-2">
+            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+              Pickup Address
+            </h4>
+
+            <div className="flex items-start gap-2 text-xs text-slate-700">
+              <MapPin className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+
+              <div>
+                <p className="font-bold text-slate-900">
+                  {order.address?.houseNo}
+                </p>
+
+                <p>
+                  {order.address?.street}, {order.address?.area}, Bengaluru -{" "}
+                  {order.address?.pincode}
+                </p>
+
+                {order.scheduledSlot && (
+                  <p className="text-emerald-700 font-bold mt-1 text-[11px] bg-emerald-50 px-2.5 py-0.5 rounded-md inline-block">
+                    📅 Schedule: {order.scheduledSlot}
+                  </p>
+                )}
+
+                {order.notes && (
+                  <p className="text-slate-700 font-medium italic mt-1.5 bg-slate-50 p-2 rounded-xl border border-slate-200 text-[11px]">
+                    "{order.notes}"
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* LIVE INTERACTIVE TRACKING MAP */}
+        <div className="md:col-span-7">
+          <div className="bg-white rounded-3xl p-4 shadow-sm border border-slate-200 h-full flex flex-col justify-between">
+            <div className="flex items-center justify-between mb-3 px-2">
+              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                {isTerminalOrderStatus(order.status)
+                  ? "Agent's Last Known GPS Location"
+                  : "Live Agent GPS Location"}
+              </h3>
+
+              {getMapStatusBadge()}
+            </div>
+
+            <LivePickupTracking orderId={order.id} status={order.status} pickupLat={pickupLat} pickupLng={pickupLng} />
+
+            {order.agent && isTerminalOrderStatus(order.status) && (
+              <p className="mt-2 px-2 text-[11px] text-slate-600 font-medium">
+                {agentLocation
+                  ? "The pickup is complete. This is the agent's last recorded position, not a live location."
+                  : "No agent location was recorded for this pickup."}
+              </p>
+            )}
+
+            {order.agent &&
+              isActiveTrackingStatus(order.status) &&
+              locationStale && (
+                <p className="mt-2 px-2 text-[11px] text-amber-700 font-medium">
+                  {agentLocation
+                    ? "Showing the last known agent position. Waiting for a fresh update."
+                    : "The agent's location isn't available right now. Your agent is still assigned, and you can call them above."}
+                </p>
+              )}
+          </div>
+        </div>
+      </div>
+
+      {/* WEIGHT VERIFICATION & ITEM SUMMARY */}
+      <div className="customer-surface rounded-[1.75rem] p-6 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+          <div>
+            <h3 className="text-base font-bold text-slate-900">
+              Waste Items & Weight Breakdown
+            </h3>
+
+            <p className="text-xs text-slate-500">
+              Includes estimated weight and agent-measured actual weight
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setComplaintError(null);
+              setShowComplaintModal(true);
+            }}
+            className="self-start sm:self-auto text-xs text-rose-600 font-bold hover:text-rose-700 hover:underline flex items-center gap-1.5 py-1 sm:py-0 focus:outline-none focus:ring-2 focus:ring-rose-500 rounded-lg transition-colors"
+            aria-haspopup="dialog"
+          >
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            Dispute Weight / Report Issue
+          </button>
+        </div>
+
+        {complaintSuccess && (
+          <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold p-3 rounded-2xl flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>Issue reported to Junk It Out support desk. We will investigate immediately.</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setComplaintSuccess(false)}
+              className="text-emerald-700 hover:text-emerald-900 p-1"
+              aria-label="Dismiss message"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* ITEMIZED TABLE */}
+        <div className="divide-y divide-slate-100 text-xs">
+          {order.items?.map((item: any) => (
+            <div
+              key={item.id}
+              className="py-3 flex items-center justify-between"
+            >
+              <div>
+                <span className="font-bold text-slate-900 block">
+                  {item.category?.name}
+                </span>
+
+                <span className="text-[11px] text-slate-500">
+                  Rate: ₹{item.ratePerKg}
+                  /kg
+                </span>
+              </div>
+
+              <div className="text-right">
+                <div className="flex items-center gap-3">
+                  <span className="text-slate-500">
+                    Est: {item.estimatedWeight} kg
+                  </span>
+
+                  <span className="font-bold text-slate-900 bg-slate-100 px-2 py-1 rounded-lg">
+                    Actual:{" "}
+                    {item.actualWeight !== null
+                      ? `${item.actualWeight} kg`
+                      : "Pending Weighing"}
+                  </span>
+
+                  <span className="font-extrabold text-emerald-700">
+                    ₹{(Number(item.subtotal) || 0).toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* CUSTOMER WASTE PHOTOS */}
+        {(() => {
+          let parsedPhotos: string[] = [];
+
+          try {
+            parsedPhotos =
+              typeof order.wastePhotos === "string"
+                ? JSON.parse(order.wastePhotos)
+                : order.wastePhotos || [];
+          } catch (e) {
+            parsedPhotos = [];
+          }
+
+          if (!parsedPhotos || parsedPhotos.length === 0) {
+            return null;
+          }
+
+          return (
+            <div className="pt-4 border-t border-slate-100">
+              <h4 className="text-xs font-bold text-slate-700 mb-2 flex items-center gap-1.5">
+                <Camera className="w-4 h-4 text-emerald-600" />
+                Customer Waste Condition Photos ({parsedPhotos.length})
+              </h4>
+
+              <div className="flex flex-wrap items-center gap-3">
+                {parsedPhotos.map((url: string, idx: number) => {
+                  const displayUrl = getSecurePhotoUrl(url, order.id);
+
+                  return (
+                    <a
+                      key={idx}
+                      href={displayUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block group"
+                    >
+                      <img
+                        src={displayUrl}
+                        alt={`Waste Photo ${idx + 1}`}
+                        loading="lazy"
+                        decoding="async"
+                        className="w-20 h-20 object-cover rounded-xl border border-slate-200 shadow-sm group-hover:scale-105 transition-transform"
+                      />
+                    </a>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* SCALE PROOF PHOTO */}
+        {order.weightRecords && order.weightRecords.length > 0 && (
+          <ScaleProofEvidence
+            weightRecord={order.weightRecords[0]}
+            orderId={order.id}
+          />
+        )}
+
+        {/* SCRAP SETTLEMENT */}
+        {order.financialDirection === "JUNKITOUT_PAYS" && order.settlement && (
+          <div className="pt-4 border-t border-slate-100 bg-emerald-50 p-4 rounded-2xl space-y-2 text-xs">
+            <h4 className="font-black text-emerald-900">Recorded adjustment</h4>
+
+            <div className="flex items-center justify-between">
+              <span>Actual Weight</span>
+
+              <strong>{order.settlement.totalWeightKg} kg</strong>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span>Approved Rate</span>
+
+              <strong>
+                {order.items
+                  ?.map((item: any) => `₹${item.ratePerKg}/kg`)
+                  .join(", ")}
+              </strong>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span>Recorded value</span>
+
+              <strong className="text-emerald-800">
+                ₹{order.settlement.amount.toFixed(2)}
+              </strong>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span>Settlement Status</span>
+
+              <strong>
+                {order.settlement.status === 'READY_FOR_PAYOUT'
+                  ? 'Approved adjustment'
+                  : order.settlement.status === 'PAID' || order.settlement.status === 'SETTLEMENT_COMPLETED'
+                  ? 'Completed adjustment'
+                  : order.settlement.status}
+              </strong>
+            </div>
+          </div>
+        )}
+
+
+        {/* TOTALS & FINANCIAL DIRECTION */}
+        <div className="bg-slate-900 text-white p-5 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div>
+            <span className="text-xs text-slate-400 uppercase font-semibold">
+              Payment Status & Total Amount
+            </span>
+
+            <h4 className="text-xl font-black text-emerald-400 mt-0.5">
+              Total Payable ₹{(order.finalAmount || 0).toFixed(2)}
+            </h4>
+
+            <p className="text-xs text-slate-300 mt-1">
+              {order.paymentStatus === "CAPTURED"
+                ? "Payment Paid"
+                : order.paymentStatus === "FAILED"
+                  ? "Payment Failed"
+                  : "Payment Required"}
+            </p>
+
+            {(() => {
+              const tax = getOrderTaxBreakdown(order);
+              if (tax && (tax.serviceFee > 0 || tax.pickupFee > 0)) {
+                return (
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Pickup Fee: ₹{tax.pickupFee.toFixed(2)} | Service Fee: ₹{tax.serviceFee.toFixed(2)}
+                    {tax.gstAmount > 0 ? ` + GST (${tax.gstRatePercent}%): ₹${tax.gstAmount.toFixed(2)}` : ''}
+                  </p>
+                );
+              }
+              return null;
+            })()}
+          </div>
+
+          <div className="flex items-center gap-3">
+            {order.financialDirection === "CUSTOMER_PAYS" &&
+              order.paymentStatus !== "CAPTURED" &&
+              order.status !== "CANCELLED" && (
+                <button
+                  onClick={handlePayNow}
+                  disabled={paymentLoading}
+                  className="btn-glossy-primary rounded-full text-slate-950 font-extrabold text-xs px-6 py-3.5 shadow-lg shadow-emerald-500/25 flex items-center gap-2 tracking-wider"
+                >
+                  {paymentLoading ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+                      Processing payment...
+                    </>
+                  ) : (
+                    <>
+                      <CreditCard className="w-4 h-4 shrink-0" />
+                      PAY NOW (RAZORPAY)
+                    </>
+                  )}
+                </button>
+              )}
+
+            {isReceiptEligible(order) && (
+              <button
+                type="button"
+                onClick={handleDownloadReceipt}
+                disabled={downloadingReceipt}
+                className="btn-glossy-dark rounded-full text-white text-xs font-bold px-5 py-3 border border-slate-700 flex items-center gap-2 hover:border-emerald-500 hover:bg-slate-800 disabled:opacity-60 transition"
+                title="Download Receipt as PDF"
+              >
+                {downloadingReceipt ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 text-emerald-400 animate-spin" />
+                    DOWNLOADING RECEIPT...
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-4 h-4 text-emerald-400" />
+                    {order.invoices && order.invoices.length > 0
+                      ? `RECEIPT (${order.invoices[0].invoiceNumber})`
+                      : 'DOWNLOAD RECEIPT (PDF)'}
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+
+          {paymentMessage && (
+            <p className="text-xs text-amber-200 sm:text-right">
+              {paymentMessage}
+            </p>
+          )}
+          {receiptError && (
+            <p className="text-xs text-rose-400 sm:text-right mt-1">
+              {receiptError}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* COMPLAINT MODAL */}
+      {mounted && showComplaintModal && typeof document !== 'undefined' && createPortal(
+        <CenteredModalLayer
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="dispute-dialog-title"
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6 overflow-y-auto pb-[calc(1rem+env(safe-area-inset-bottom,0px))]"
+        >
+          {/* Backdrop overlay: blurs background page content only, dismissible on click */}
+          <div
+            className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm transition-opacity"
+            style={{ WebkitBackdropFilter: 'blur(4px)' }}
+            onClick={() => !complaintSubmitting && setShowComplaintModal(false)}
+            aria-hidden="true"
+          />
+
+          {/* Modal content: completely sharp, isolated from backdrop filter, scrollable on short mobile viewports */}
+          <div
+            className="relative z-10 bg-white rounded-3xl p-5 sm:p-6 max-w-md w-full space-y-4 shadow-2xl border border-slate-100 my-auto max-h-[calc(100dvh-2rem)] overflow-y-auto"
+            style={{ transform: 'translateZ(0)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2 text-rose-600 font-extrabold text-base">
+                <AlertCircle className="w-5 h-5 shrink-0" />
+                <h3 id="dispute-dialog-title" className="text-slate-900 font-black text-base sm:text-lg">
+                  Report an Issue / Dispute Weight
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => !complaintSubmitting && setShowComplaintModal(false)}
+                disabled={complaintSubmitting}
+                className="p-1 rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors"
+                aria-label="Close dialog"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {complaintError && (
+              <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold p-3 rounded-xl flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-500" />
+                <span>{complaintError}</span>
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <label htmlFor="dispute-reason-textarea" className="text-xs font-bold text-slate-700 block">
+                Describe your issue:
+              </label>
+              <textarea
+                id="dispute-reason-textarea"
+                value={complaintText}
+                onChange={(e) => {
+                  setComplaintText(e.target.value);
+                  if (complaintError) setComplaintError(null);
+                }}
+                placeholder="Describe your issue (e.g. wrong weight entered, agent behavior, delay)"
+                rows={4}
+                disabled={complaintSubmitting}
+                className="w-full bg-slate-50 border border-slate-200 rounded-2xl p-3 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-rose-500 disabled:opacity-60 transition-colors"
+              />
+            </div>
+
+            <div className="flex gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowComplaintModal(false)}
+                disabled={complaintSubmitting}
+                className="w-1/2 btn-glossy-secondary rounded-full font-bold text-xs py-3 shadow-xs"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSubmitComplaint}
+                disabled={complaintSubmitting || !complaintText.trim()}
+                className="w-1/2 btn-glossy-danger rounded-full font-bold text-xs py-3 shadow-md flex items-center justify-center gap-1.5"
+              >
+                {complaintSubmitting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    Submitting...
+                  </>
+                ) : (
+                  "Submit Dispute"
+                )}
+              </button>
+            </div>
+          </div>
+        </CenteredModalLayer>,
+        document.body
+      )}
+
+      {/* CANCELLATION MODAL */}
+      {mounted && showCancelModal && typeof document !== 'undefined' && createPortal(
+        <CenteredModalLayer
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cancel-dialog-title"
+          className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 overflow-hidden"
+          style={{
+            paddingTop: 'max(0.75rem, env(safe-area-inset-top, 0.75rem))',
+            paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom, 0.75rem))',
+            paddingLeft: 'max(0.75rem, env(safe-area-inset-left, 0.75rem))',
+            paddingRight: 'max(0.75rem, env(safe-area-inset-right, 0.75rem))',
+          }}
+        >
+          {/* Backdrop overlay: blurs background page content only, dismissible on click */}
+          <div
+            className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm transition-opacity"
+            style={{ WebkitBackdropFilter: 'blur(4px)' }}
+            onClick={() => !cancelling && setShowCancelModal(false)}
+            aria-hidden="true"
+          />
+
+          {/* Modal content: responsive layout with pinned header & footer and scrollable body */}
+          <div
+            className="relative z-10 bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-100 flex flex-col max-h-[min(90dvh,600px)] overflow-hidden my-auto"
+            style={{ transform: 'translateZ(0)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Pinned Header */}
+            <div className="shrink-0 flex items-center justify-between px-5 pt-4 pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2 text-rose-600 font-extrabold text-base">
+                <AlertCircle className="w-5 h-5 shrink-0" />
+                <h3 id="cancel-dialog-title" className="text-slate-900 font-black text-base">
+                  Cancel Pickup Order
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => !cancelling && setShowCancelModal(false)}
+                disabled={cancelling}
+                className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors touch-manipulation cursor-pointer disabled:opacity-50"
+                aria-label="Close dialog"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Scrollable Content Body */}
+            <div className="flex-1 overflow-y-auto overscroll-contain px-5 py-4 space-y-4 text-left">
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Are you sure you want to cancel pickup order{" "}
+                <strong className="text-slate-900 font-mono">#{order.orderNumber}</strong>?
+              </p>
+
+              {order.paymentStatus === "CAPTURED" && (
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 text-xs text-amber-900">
+                  <span className="font-bold block">Prepaid Order Refund</span>
+                  Your paid amount of ₹{(order.finalAmount || order.estimatedTotal || 0).toFixed(2)} will be automatically queued for a 100% refund to your original payment method.
+                </div>
+              )}
+
+              {cancelError && (
+                <div role="alert" className="bg-rose-50 border border-rose-200 rounded-2xl p-3 text-xs text-rose-800 font-semibold flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <span>{cancelError}</span>
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <label htmlFor="cancel-reason-select" className="text-xs font-bold text-slate-700 block">
+                  Reason for cancellation:
+                </label>
+                <select
+                  id="cancel-reason-select"
+                  value={cancelReason}
+                  onChange={(e) => setCancelReason(e.target.value)}
+                  disabled={cancelling}
+                  className="w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-rose-500 touch-manipulation"
+                >
+                  <option value="Need to reschedule for another time">Need to reschedule for another time</option>
+                  <option value="Scrap/junk items are no longer available">Scrap/junk items are no longer available</option>
+                  <option value="Placed order by mistake / testing">Placed order by mistake / testing</option>
+                  <option value="Assigned agent is delayed or taking too long">Assigned agent is delayed or taking too long</option>
+                  <option value="Found alternative disposal method">Found alternative disposal method</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+
+              {cancelReason === "Other" && (
+                <div className="space-y-1.5">
+                  <label htmlFor="custom-cancel-reason" className="text-xs font-bold text-slate-700 block">
+                    Please specify:
+                  </label>
+                  <textarea
+                    id="custom-cancel-reason"
+                    value={customCancelReason}
+                    onChange={(e) => setCustomCancelReason(e.target.value)}
+                    placeholder="Tell us why you are cancelling this pickup..."
+                    rows={3}
+                    disabled={cancelling}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 focus:ring-2 focus:ring-rose-500 touch-manipulation"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Pinned Footer Actions */}
+            <div className="shrink-0 px-5 pt-3 pb-4 border-t border-slate-100 flex gap-2.5 bg-slate-50/50">
+              <button
+                type="button"
+                onClick={() => setShowCancelModal(false)}
+                disabled={cancelling}
+                className="w-1/2 min-h-[44px] bg-slate-100 hover:bg-slate-200 disabled:opacity-60 text-slate-700 font-bold text-xs py-2.5 px-3 rounded-xl transition-colors flex items-center justify-center touch-manipulation cursor-pointer"
+              >
+                Keep Pickup
+              </button>
+
+              <button
+                type="button"
+                onClick={handleCancelOrder}
+                disabled={cancelling}
+                className="w-1/2 min-h-[44px] bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white font-bold text-xs py-2.5 px-3 rounded-xl shadow-md transition-colors flex items-center justify-center gap-1.5 touch-manipulation cursor-pointer"
+              >
+                {cancelling ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+                    <span>Cancelling...</span>
+                  </>
+                ) : (
+                  "Confirm Cancellation"
+                )}
+              </button>
+            </div>
+          </div>
+        </CenteredModalLayer>,
+        document.body
+      )}
+
+
+    </div>
+    </div>
+  );
+}

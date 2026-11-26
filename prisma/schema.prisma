@@ -1,0 +1,860 @@
+generator client {
+  provider = "prisma-client-js"
+  engineType = "client"
+}
+
+datasource db {
+  provider  = "sqlite"
+  url       = "file:./local.db"
+
+}
+
+model User {
+  id                 String               @id @default(uuid())
+  phone              String               @unique
+  email              String?              @unique
+  name               String
+  passwordHash       String?
+  role               String               @default("CUSTOMER")
+  deletionRequestedAt DateTime?
+  deletionDueAt       DateTime?
+  tokenVersion       Int                  @default(1)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  addresses          Address[]
+  admin              Admin?
+  agent              Agent?
+  auditLogs          AuditLog[]
+  customer           Customer?
+  notifications      Notification[]
+  orderStatusChanges OrderStatusHistory[]
+  refundRequests     RefundRequest[]       @relation("RefundRequestedBy")
+  refundReviews      RefundRequest[]       @relation("RefundReviewedBy")
+  walletAdjustments  WalletTransaction[]   @relation("WalletAdjustmentAdmin")
+  agentWalletAdjustments AgentWalletTransaction[] @relation("AgentWalletAdjustmentAdmin")
+  walletBonusCampaigns WalletBonusCampaign[] @relation("WalletBonusCampaignCreator")
+  supportCalls       SupportCall[]
+  voiceCalls         VoiceCall[]
+  weightRecords      WeightRecord[]
+  @@index([deletionDueAt])
+}
+
+model ContactEnquiry {
+  id          String   @id @default(uuid())
+  name        String
+  phone       String
+  email       String
+  subject     String
+  message     String
+  status      String   @default("OPEN")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model Customer {
+  id           String       @id @default(uuid())
+  userId       String       @unique
+  referralCode String?      @unique
+  points       Int          @default(0)
+  createdAt    DateTime     @default(now())
+  supportCalls SupportCall[]
+  complaints   Complaint[]
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders       Order[]
+  reviews      Review[]
+  settlements  Settlement[]
+  orderIdempotencyRecords OrderIdempotency[]
+  wallet        CustomerWallet?
+  subscriptions CustomerSubscription[]
+  walletTransactions WalletTransaction[]
+  subscriptionPayments SubscriptionPayment[]
+  walletBonusGrants WalletBonusGrant[]
+}
+
+model CustomerWallet {
+  id           String             @id @default(uuid())
+  customerId   String             @unique
+  balance      Float              @default(0)
+  balancePaise Int                @default(0)
+  paidBalancePaise Int            @default(0)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  customer     Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  transactions WalletTransaction[]
+  bonusGrants  WalletBonusGrant[]
+}
+
+model WalletTransaction {
+  id               String         @id @default(uuid())
+  walletId         String
+  customerId       String
+  type             String
+  amount           Float
+  balanceAfter     Float          @default(0)
+  amountPaise      Int            @default(0)
+  balanceAfterPaise Int           @default(0)
+  status           String         @default("PENDING")
+  referenceId      String?
+  gatewayOrderId   String?        @unique
+  gatewayPaymentId String?        @unique
+  reason           String?
+  adminId          String?
+  failureReason    String?
+  campaignId       String?
+  originalRechargeAmount Float?
+  bonusAmount      Float?
+  bonusExpiryDate  DateTime?
+  idempotencyKey   String?        @unique
+  bonusGrantId     String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  wallet           CustomerWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  customer         Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  admin            User?          @relation("WalletAdjustmentAdmin", fields: [adminId], references: [id])
+  campaign         WalletBonusCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  bonusGrant       WalletBonusGrant? @relation(fields: [bonusGrantId], references: [id], onDelete: SetNull)
+  sourceBonusGrant WalletBonusGrant? @relation("WalletBonusGrantSource")
+  rechargeBonusGrants WalletBonusGrant[] @relation("WalletBonusGrantRecharge")
+  consumptions     WalletBonusConsumption[]
+
+  @@index([customerId, createdAt])
+  @@index([walletId, status, createdAt])
+  @@index([type, status, createdAt])
+}
+
+model WalletBonusCampaign {
+  id                    String   @id @default(uuid())
+  campaignName          String
+  description           String   @default("")
+  bonusType             String   @default("PERCENTAGE")
+  bonusPercentage       Float?
+  minimumRechargeAmount Float    @default(0)
+  maximumBonusAmount    Float?
+  campaignStartDate     DateTime
+  campaignEndDate       DateTime
+  bonusExpiryDays       Int      @default(0)
+  status                String   @default("DRAFT")
+  isActive              Boolean  @default(false)
+  priority              Int      @default(0)
+  createdBy             String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  creator               User?    @relation("WalletBonusCampaignCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  slabs                 WalletBonusSlab[]
+  transactions          WalletTransaction[]
+  grants                WalletBonusGrant[]
+
+  @@index([status, isActive, campaignStartDate, campaignEndDate])
+}
+
+model WalletBonusSlab {
+  id                    String   @id @default(uuid())
+  campaignId            String
+  minimumAmount         Float
+  maximumAmount         Float?
+  bonusPercentage       Float?
+  fixedBonusAmount      Float?
+  maximumBonusAmount    Float?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  campaign              WalletBonusCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, minimumAmount])
+}
+
+model WalletBonusGrant {
+  id                    String   @id @default(uuid())
+  walletId              String
+  customerId            String
+  sourceTransactionId   String   @unique
+  rechargeTransactionId String
+  campaignId            String?
+  grantedPaise          Int
+  remainingPaise        Int
+  status                String   @default("ACTIVE")
+  expiresAt             DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  wallet                CustomerWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  customer              Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  sourceTransaction     WalletTransaction @relation("WalletBonusGrantSource", fields: [sourceTransactionId], references: [id], onDelete: Restrict)
+  rechargeTransaction   WalletTransaction @relation("WalletBonusGrantRecharge", fields: [rechargeTransactionId], references: [id], onDelete: Restrict)
+  campaign              WalletBonusCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  transactions          WalletTransaction[]
+  consumptions          WalletBonusConsumption[]
+
+  @@index([walletId, status, expiresAt, createdAt])
+  @@index([customerId, status, expiresAt, createdAt])
+  @@index([rechargeTransactionId])
+}
+
+model WalletBonusConsumption {
+  id                    String   @id @default(uuid())
+  grantId               String
+  walletTransactionId   String
+  consumedPaise         Int
+  createdAt             DateTime @default(now())
+  grant                 WalletBonusGrant @relation(fields: [grantId], references: [id], onDelete: Restrict)
+  walletTransaction     WalletTransaction @relation(fields: [walletTransactionId], references: [id], onDelete: Cascade)
+
+  @@unique([grantId, walletTransactionId])
+  @@index([walletTransactionId])
+}
+
+model SubscriptionOffer {
+  id              String                 @id @default(uuid())
+  name            String
+  description     String
+  durationMonths  Int                    @default(1)
+  durationDays    Int                    @default(30)
+  billingPeriod   String                 @default("MONTHLY")
+  price           Float
+  pickupLimit     Int                    @default(4)
+  benefitsJson    String                 @default("[]")
+  active          Boolean                @default(true)
+  displayOrder    Int                    @default(0)
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  subscriptions   CustomerSubscription[]
+  payments        SubscriptionPayment[]
+
+  @@index([active, displayOrder])
+  @@index([billingPeriod, active])
+  @@unique([name, durationMonths])
+}
+
+model CustomerSubscription {
+  id                 String               @id @default(uuid())
+  customerId         String
+  offerId            String
+  paymentId          String?              @unique
+  status             String               @default("ACTIVE")
+  startDate          DateTime
+  expiryDate         DateTime
+  pickupsAllowed     Int                  @default(4)
+  pickupsUsed        Int                  @default(0)
+  autoRenew          Boolean              @default(false)
+  cancelledAt        DateTime?
+  cancellationReason String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  customer           Customer             @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  offer              SubscriptionOffer    @relation(fields: [offerId], references: [id], onDelete: Restrict)
+  payment            SubscriptionPayment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  orders             Order[]
+
+  @@index([customerId, status, expiryDate])
+  @@index([offerId, createdAt])
+  @@index([status, expiryDate])
+}
+
+model SubscriptionPayment {
+  id                  String                @id @default(uuid())
+  customerId          String
+  offerId             String
+  amount              Float
+  paymentMethod       String                @default("RAZORPAY")
+  status              String                @default("PENDING")
+  gatewayOrderId      String?               @unique
+  gatewayPaymentId    String?               @unique
+  walletTransactionId String?
+  signature           String?
+  failureReason       String?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  customer            Customer              @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  offer               SubscriptionOffer     @relation(fields: [offerId], references: [id], onDelete: Restrict)
+  subscription        CustomerSubscription?
+
+  @@index([customerId, createdAt])
+  @@index([offerId, status, createdAt])
+}
+
+model Agent {
+  id            String          @id @default(uuid())
+  userId        String          @unique
+  vehicleType   String          @default("Three-Wheeler Auto Loading")
+  vehicleNumber String          @default("KA-05-JK-1024")
+  status        String          @default("OFFLINE")
+  currentLat    Float           @default(12.9166)
+  currentLng    Float           @default(77.5996)
+  rating        Float           @default(4.9)
+  serviceAreas  String          @default("JP Nagar, Jayanagar, Koramangala, Electronic City")
+  tokenVersion  Int             @default(1)
+  createdAt     DateTime        @default(now())
+  user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  locationAccuracy Float?
+  locationCapturedAt DateTime?
+  locationReceivedAt DateTime?
+  bengaluruVerifiedAt DateTime?
+  bengaluruVerifiedLat Float?
+  bengaluruVerifiedLng Float?
+  locations     AgentLocation[]
+  orders        Order[]
+  reviews       Review[]
+  wallet        AgentWallet?
+  walletTransactions AgentWalletTransaction[]
+  pickupEarnings PickupEarning[]
+  kyc AgentKyc?
+  kycRequired Boolean @default(false)
+  @@index([status, locationReceivedAt], map: "Agent_presence_status")
+}
+
+model AgentWallet {
+  id           String                   @id @default(uuid())
+  agentId      String                   @unique
+  balance      Float                    @default(0)
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
+  agent        Agent                    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  transactions AgentWalletTransaction[]
+}
+
+model AgentWalletTransaction {
+  id            String      @id @default(uuid())
+  walletId      String
+  agentId       String
+  type          String
+  amount        Float
+  balanceAfter  Float       @default(0)
+  status        String      @default("SUCCESS")
+  referenceId   String?     @unique
+  orderId       String?
+  reason        String?
+  adminId       String?
+  failureReason String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  wallet        AgentWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  agent         Agent       @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  admin         User?       @relation("AgentWalletAdjustmentAdmin", fields: [adminId], references: [id])
+  order         Order?      @relation("AgentWalletTransactionOrder", fields: [orderId], references: [id])
+
+  @@index([agentId, createdAt])
+  @@index([walletId, status, createdAt])
+  @@index([type, status, createdAt])
+  @@index([orderId])
+}
+
+model Admin {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  department  String   @default("Operations")
+  accessLevel String   @default("FULL")
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Address {
+  id                 String   @id @default(uuid())
+  userId             String
+  label              String   @default("Home")
+  name               String
+  phone              String
+  houseNo            String
+  building           String?
+  street             String
+  area               String
+  landmark           String?
+  city               String   @default("Bengaluru")
+  pincode            String
+  lat                Float
+  lng                Float
+  googlePlaceId      String?
+  pickupInstructions String?
+  isDefault          Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  formattedAddress   String?
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders             Order[]
+}
+
+model ServiceArea {
+  id                String        @id @default(uuid())
+  name              String        @unique
+  city              String        @default("Bengaluru")
+  status            String        @default("ACTIVE")
+  etaMinutes        Int           @default(25)
+  basePickupCharge  Float         @default(49.0)
+  boundaryPolygon   String
+  centerLat         Float         @default(12.9166)
+  centerLng         Float         @default(77.5996)
+  pricingMultiplier Float         @default(1.0)
+  createdAt         DateTime      @default(now())
+  pricingRules      PricingRule[]
+}
+
+model WasteCategory {
+  id           String        @id @default(uuid())
+  name         String        @unique
+  description  String
+  category     String        @default("Recyclables")
+  imageUrl     String?
+  icon         String        @default("Trash2")
+  type         String        @default("RECYCLABLE_BUY")
+  pricePerKg   Float         @default(20.0)
+  minWeightKg  Float         @default(1.0)
+  maxWeightKg  Float         @default(500.0)
+  displayOrder Int           @default(0)
+  active       Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @default(now()) @updatedAt
+  orderItems   OrderItem[]
+  pricingRules PricingRule[]
+}
+
+model PricingRule {
+  id              String        @id @default(uuid())
+  categoryId      String
+  serviceAreaId   String?
+  ratePerKg       Float
+  pickupCharge    Float         @default(49.0)
+  minPickupCharge Float         @default(49.0)
+  urgentSurcharge Float         @default(0.0)
+  createdAt       DateTime      @default(now())
+  category        WasteCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  serviceArea     ServiceArea?  @relation(fields: [serviceAreaId], references: [id])
+}
+
+model Order {
+  scheduledFor DateTime?
+  assignmentDeadlineAt DateTime?
+  assignmentTimedOutAt DateTime?
+  timeoutPolicyVersion Int @default(0)
+  pickupGate PickupGate?
+  trackingRoute TrackingRoute?
+
+  voiceCalls         VoiceCall[]
+  id                 String               @id @default(uuid())
+  orderNumber        String               @unique
+  customerId         String
+  agentId            String?
+  addressId          String
+  pickupType         String               @default("ASAP")
+  scheduledSlot      String?
+  status             String               @default("BOOKING_RECEIVED")
+  financialDirection String               @default("JUNKITOUT_PAYS")
+  estimatedTotal     Float                @default(0.0)
+  actualTotal        Float                @default(0.0)
+  pickupCharge       Float                @default(49.0)
+  pickupFee          Float?               @default(0.0)
+  serviceFee         Float?               @default(0.0)
+  taxableAmount      Float?               @default(0.0)
+  gstRate            Float?               @default(0.18)
+  gstAmount          Float?               @default(0.0)
+  cgstAmount         Float?               @default(0.0)
+  sgstAmount         Float?               @default(0.0)
+  igstAmount         Float?               @default(0.0)
+  discountAmount     Float                @default(0.0)
+  finalAmount        Float                @default(0.0)
+  paymentStatus      String               @default("PENDING")
+  wastePhotos        String               @default("[]")
+  cancellationReason String?
+  notes              String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  locations          AgentLocation[]
+  complaints         Complaint[]
+  invoices           Invoice[]
+  notifications      Notification[]
+  address            Address              @relation(fields: [addressId], references: [id])
+  agent              Agent?               @relation(fields: [agentId], references: [id])
+  customer           Customer             @relation(fields: [customerId], references: [id])
+  items              OrderItem[]
+  statusHistory      OrderStatusHistory[]
+  payments           Payment[]
+  refundRequest      RefundRequest?
+  reviews            Review?
+  settlement         Settlement?
+  weightRecords      WeightRecord[]
+  orderIdempotency   OrderIdempotency?
+  agentWalletTransactions AgentWalletTransaction[] @relation("AgentWalletTransactionOrder")
+  pickupEarning PickupEarning?
+  subscriptionId     String?
+  subscription       CustomerSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, createdAt])
+  @@index([createdAt(sort: Desc)])
+  @@index([agentId, status, createdAt])
+  @@index([status, createdAt])
+  @@index([paymentStatus, createdAt])
+  @@index([financialDirection, status, createdAt])
+  @@index([subscriptionId])
+  @@index([timeoutPolicyVersion,agentId,assignmentDeadlineAt])
+}
+
+model OrderIdempotency {
+  id           String   @id @default(uuid())
+  customerId   String
+  key          String
+  payloadHash  String
+  orderId      String   @unique
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime?
+  customer     Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  order        Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, key])
+  @@index([expiresAt])
+}
+
+model OrderItem {
+  id              String        @id @default(uuid())
+  orderId         String
+  categoryId      String
+  estimatedWeight Float         @default(5.0)
+  actualWeight    Float?
+  ratePerKg       Float         @default(20.0)
+  subtotal        Float         @default(0.0)
+  category        WasteCategory @relation(fields: [categoryId], references: [id])
+  order           Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+}
+
+model WeightRecord {
+  id               String   @id @default(uuid())
+  orderId          String
+  recordedByUserId String
+  scalePhotoUrl    String?
+  weightJson       String
+  notes            String?
+  createdAt        DateTime @default(now())
+  order            Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  recordedBy       User     @relation(fields: [recordedByUserId], references: [id])
+}
+
+model Payment {
+  id             String   @id @default(uuid())
+  orderId        String
+  amount         Float
+  direction      String   @default("JUNKITOUT_PAYS")
+  gateway        String   @default("RAZORPAY")
+  gatewayOrderId String?
+  paymentId      String?
+  signature      String?
+  status         String   @default("PENDING")
+  createdAt      DateTime @default(now())
+  order          Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  refundRequest  RefundRequest?
+
+  @@index([gatewayOrderId, direction])
+  @@index([paymentId])
+  @@index([orderId, direction, status])
+  @@index([status, amount])
+}
+
+model RefundRequest {
+  id                String   @id @default(uuid())
+  orderId           String   @unique
+  paymentId         String   @unique
+  requestedByUserId String
+  requestedAt       DateTime @default(now())
+  status            String   @default("PENDING_ADMIN_REVIEW")
+  amount            Float
+  reviewedByUserId  String?
+  reviewedAt        DateTime?
+  reviewReason      String?
+  razorpayRefundId  String?  @unique
+  failureReason     String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  order             Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  payment           Payment  @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  requestedBy       User     @relation("RefundRequestedBy", fields: [requestedByUserId], references: [id])
+  reviewedBy        User?    @relation("RefundReviewedBy", fields: [reviewedByUserId], references: [id])
+
+  @@index([status, createdAt])
+}
+
+// These models mirror the pre-existing Supabase tables. orderId and paymentId
+// intentionally remain scalar columns: the supplied SQL defines no FKs for them.
+model RefundAttempt {
+  id               String               @id
+  orderId          String
+  paymentId        String
+  razorpayRefundId String?              @unique
+  status           String               @default("PENDING")
+  amount           Float
+  failureReason    String?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @default(now()) @updatedAt
+  events           RefundAttemptEvent[]
+
+  @@index([orderId], map: "RefundAttempt_orderId_idx")
+  @@index([paymentId], map: "RefundAttempt_paymentId_idx")
+  @@index([status, createdAt], map: "RefundAttempt_status_createdAt_idx")
+}
+
+model RefundAttemptEvent {
+  id              String        @id
+  refundAttemptId String
+  eventType       String
+  status          String?
+  details         Json?         
+  createdAt       DateTime      @default(now())
+  refundAttempt   RefundAttempt @relation(fields: [refundAttemptId], references: [id], onDelete: Cascade)
+
+  @@index([refundAttemptId, createdAt], map: "RefundAttemptEvent_refundAttemptId_createdAt_idx")
+}
+
+model Settlement {
+  id            String    @id @default(uuid())
+  orderId       String    @unique
+  customerId    String
+  totalWeightKg Float
+  amount        Float
+  breakdownJson String
+  status        String    @default("PENDING")
+  payoutId      String?
+  utr           String?
+  payoutMethod  String?   @default("BANK_TRANSFER")
+  failureReason String?
+  processedAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  approvedAt    DateTime?
+  paidAt        DateTime?
+  customer      Customer  @relation(fields: [customerId], references: [id])
+  order         Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([customerId, createdAt])
+}
+
+model AgentLocation {
+  id        String   @id @default(uuid())
+  agentId   String
+  orderId   String?
+  lat       Float
+  lng       Float
+  speed     Float?   @default(0.0)
+  timestamp DateTime @default(now())
+  agent     Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  order     Order?   @relation(fields: [orderId], references: [id])
+
+  @@index([agentId, orderId, timestamp])
+}
+
+model OrderStatusHistory {
+  id              String   @id @default(uuid())
+  orderId         String
+  oldStatus       String?
+  newStatus       String
+  changedByUserId String?
+  notes           String?
+  timestamp       DateTime @default(now())
+  changedBy       User?    @relation(fields: [changedByUserId], references: [id])
+  order           Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+}
+
+model Notification {
+  id                String   @id @default(uuid())
+  userId            String
+  orderId           String?
+  type              String   @default("WHATSAPP")
+  recipient         String
+  content           String
+  status            String   @default("SENT")
+  provider          String?  @default("FAST2SMS")
+  providerRequestId String?
+  deliveryAttempts Int      @default(0)
+  deliveryStatus    String?  @default("sent")
+  statusDescription String?
+  sentAt            DateTime @default(now())
+  order             Order?   @relation(fields: [orderId], references: [id])
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Coupon {
+  id            String    @id @default(uuid())
+  code          String    @unique
+  discountType  String    @default("FLAT")
+  discountValue Float     @default(50.0)
+  minOrderValue Float     @default(100.0)
+  maxDiscount   Float?    @default(100.0)
+  active        Boolean   @default(true)
+  expiryDate    DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([active, expiryDate])
+}
+
+model Complaint {
+  id              String   @id @default(uuid())
+  orderId         String?
+  customerId      String
+  category        String   @default("WEIGHT_DISPUTE")
+  description     String?
+  photoUrl        String?
+  status          String   @default("OPEN")
+  resolutionNotes String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  customer        Customer @relation(fields: [customerId], references: [id])
+  order           Order?   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+model Review {
+  id         String   @id @default(uuid())
+  orderId    String   @unique
+  customerId String
+  agentId    String
+  rating     Int      @default(5)
+  comment    String?
+  createdAt  DateTime @default(now())
+  agent      Agent    @relation(fields: [agentId], references: [id])
+  customer   Customer @relation(fields: [customerId], references: [id])
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+}
+
+model Invoice {
+  id            String   @id @default(uuid())
+  invoiceNumber String   @unique
+  orderId       String
+  pdfDataJson   String
+  totalAmount   Float
+  pickupFee     Float    @default(0.0)
+  serviceFee    Float    @default(0.0)
+  taxableAmount Float    @default(0.0)
+  gstRate       Float    @default(0.18)
+  gstAmount     Float    @default(0.0)
+  cgstAmount    Float    @default(0.0)
+  sgstAmount    Float    @default(0.0)
+  igstAmount    Float    @default(0.0)
+  createdAt     DateTime @default(now())
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  userName  String   @default("System")
+  action    String
+  oldValue  String?
+  newValue  String?
+  ipAddress String?  @default("127.0.0.1")
+  timestamp DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([timestamp])
+  @@index([action, timestamp])
+}
+
+// Only a keyed phone digest survives erasure, until the onboarding block expires.
+model DeletedPhoneBlock {
+  phoneHash String @id
+  expiresAt DateTime
+  @@index([expiresAt])
+}
+
+model VoiceCall {
+  id String @id @default(uuid())
+  orderId String
+  callerUserId String
+  attemptKey String @unique
+  gatewaySid String? @unique
+  status String @default("CREATING")
+  duration Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  order Order @relation(fields:[orderId],references:[id],onDelete:Cascade)
+  caller User @relation(fields:[callerUserId],references:[id],onDelete:Cascade)
+  @@index([orderId,createdAt])
+  @@index([callerUserId,createdAt])
+}
+
+model SupportCall {
+ id String @id @default(uuid())
+ customerId String
+ callerUserId String
+ teamPhoneHash String
+ teamPhoneLast4 String
+ attemptKey String @unique
+ gatewaySid String? @unique
+ status String @default("CREATING")
+ duration Int?
+ createdAt DateTime @default(now())
+ updatedAt DateTime @updatedAt
+ customer Customer @relation(fields:[customerId],references:[id],onDelete:Cascade)
+ caller User @relation(fields:[callerUserId],references:[id],onDelete:Cascade)
+ @@index([customerId,createdAt])
+ @@index([callerUserId,createdAt])
+ @@index([teamPhoneHash,createdAt])
+}
+
+model PickupEarning {
+  id String @id @default(uuid())
+  orderId String @unique
+  agentId String
+  grossPaise Int
+  agentPaise Int
+  companyGrossPaise Int
+  serviceFeePaise Int
+  gstPaise Int
+  cgstPaise Int
+  sgstPaise Int
+  igstPaise Int
+  gstRate Float
+  policy String @default("65_35_GST_INCLUDED_V1")
+  createdAt DateTime @default(now())
+  order Order @relation(fields:[orderId], references:[id], onDelete:Cascade)
+  agent Agent @relation(fields:[agentId], references:[id], onDelete:Cascade)
+  @@index([agentId, createdAt])
+}
+
+model AgentKyc {
+  id String @id @default(uuid())
+  agentId String @unique
+  verificationId String @unique
+  templateName String
+  providerStatus String @default("CREATING")
+  reviewStatus String @default("PENDING")
+  formLink String?
+  expiresAt DateTime
+  consentAt DateTime
+  checksJson String @default("[]")
+  reviewedBy String?
+  reviewedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  agent Agent @relation(fields:[agentId], references:[id], onDelete:Cascade)
+}
+
+model PickupGate {
+  orderId String @id
+  nonce String
+  arrivedAt DateTime
+  verifiedAt DateTime?
+  verifiedAgentId String?
+  failedAttempts Int @default(0)
+  lockedUntil DateTime?
+  updatedAt DateTime @updatedAt
+  order Order @relation(fields:[orderId],references:[id],onDelete:Cascade)
+}
+model TrackingRoute {
+  orderId String @id
+  agentId String
+  sourceLat Float
+  sourceLng Float
+  encodedPolyline String
+  durationSeconds Int
+  distanceMeters Int
+  computedAt DateTime
+  locationAt DateTime
+  refreshClaimedAt DateTime?
+  order Order @relation(fields:[orderId],references:[id],onDelete:Cascade)
+}
+
+model VoiceRoutingConfig {
+  id String @id
+  supportFallbackUserId String?
+  flowUrl String
+  updatedAt DateTime @updatedAt
+}

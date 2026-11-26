@@ -1,0 +1,8 @@
+'use client';
+import {useEffect,useState} from 'react';
+const money=(paise:number)=>new Intl.NumberFormat('en-IN',{style:'currency',currency:'INR'}).format((paise||0)/100);
+export default function AgentEarnings(){
+ const [rows,setRows]=useState<any[]>([]),[message,setMessage]=useState('Loading earnings…');
+ useEffect(()=>{const controller=new AbortController();fetch('/api/admin/agent-earnings',{signal:controller.signal,cache:'no-store'}).then(async r=>{const j=await r.json();if(!r.ok||!j.success)throw new Error(j.message);setRows(j.data);setMessage(j.data.length?'':'No completed pickup earnings yet.');}).catch(e=>{if(!controller.signal.aborted)setMessage(e.message||'Could not load earnings.');});return()=>controller.abort();},[]);
+ return <div className="space-y-6"><header><h1 className="text-3xl font-bold">Agent pickup earnings</h1><p className="text-slate-600 mt-3">65% is credited to the assigned agent’s wallet when pickup completes. Company share is 35%, including GST on service fees. Showing the latest 100 allocations.</p></header>{message&&<p role="status">{message}</p>}<div className="overflow-x-auto bg-white border rounded-2xl"><table className="w-full text-sm text-left"><thead className="bg-slate-100"><tr>{['Pickup','Agent','Pickup value','Agent 65%','Company 35% incl. GST','Service fee ex. GST','GST'].map(t=><th key={t} className="p-4 whitespace-nowrap">{t}</th>)}</tr></thead><tbody>{rows.map(r=><tr key={r.id} className="border-t"><td className="p-4 whitespace-nowrap">{r.orderNumber}</td><td className="p-4">{r.agentName}</td>{['grossPaise','agentPaise','companyGrossPaise','serviceFeePaise','gstPaise'].map(k=><td key={k} className="p-4 whitespace-nowrap">{money(r[k])}</td>)}</tr>)}</tbody></table></div></div>;
+}

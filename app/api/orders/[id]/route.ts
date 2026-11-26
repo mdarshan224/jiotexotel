@@ -1,0 +1,253 @@
+import { agentOrder } from '@/lib/orders/agentOrder';
+import { NextRequest } from 'next/server';
+import { db } from '@/lib/db';
+import { getAuthUser } from '@/lib/auth/middleware';
+import { successResponse, errorResponse } from '@/lib/utils/apiResponse';
+import {
+  getOrderIdentifierWhere,
+  isCustomerOrderOwner,
+  isAgentOrderAssigned,
+  isOrderOpenForAssignment,
+} from '@/lib/orderAccess';
+import { findEligibleAgentsForServiceArea,selectNearestEligibleAgent,isAgentEligibleForServiceArea } from '@/lib/services/agentService';
+import { shouldHideAgentContact } from '@/lib/orders/lifecycle';
+
+export async function GET(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const rawParams = await params;
+    const rawId = rawParams?.id;
+    const id = typeof rawId === 'string' ? decodeURIComponent(rawId).trim() : '';
+
+    if (!id) {
+      return errorResponse('INVALID_ORDER_ID', 'A valid order identifier is required.', 400);
+    }
+
+    const authUser = await getAuthUser(req);
+
+    // Role-based Ownership Authorization Check
+    if (!authUser) {
+      return errorResponse('UNAUTHORIZED', 'Authentication is required to view order details.', 401);
+    }
+
+    const orderWhere = id.toUpperCase() !== id && id.toLowerCase().startsWith('jio-')
+      ? { OR: [{ id }, { orderNumber: id }, { orderNumber: id.toUpperCase() }] }
+      : getOrderIdentifierWhere(id);
+
+    const order: any = authUser.role === 'AGENT'
+      ? await db.order.findFirst({
+          where: orderWhere,
+          select: {
+            pickupGate: { select: { verifiedAt: true, verifiedAgentId: true } },
+            id: true,
+            orderNumber: true,
+            customerId: true,
+            agentId: true,
+            status: true,
+            createdAt: true,
+            estimatedTotal: true,
+            pickupType: true,
+            scheduledSlot: true,
+            statusHistory: { select: { id: true, newStatus: true, timestamp: true }, orderBy: { timestamp: 'desc' } },
+            financialDirection: true,
+            paymentStatus: true,
+            pickupCharge: true,
+            discountAmount: true,
+            finalAmount: true,
+            actualTotal: true,
+            customer: {
+              select: {
+                user: { select: { name: true } },
+              },
+            },
+            address: {
+              select: {
+                name: true,
+                houseNo: true,
+                street: true,
+                area: true,
+                lat: true,
+                lng: true,
+                pickupInstructions: true,
+              },
+            },
+            items: {
+              select: {
+                id: true,
+                categoryId: true,
+                estimatedWeight: true,
+                actualWeight: true,
+                ratePerKg: true,
+                subtotal: true,
+                category: { select: { id: true, name: true, type: true } },
+              },
+            },
+          },
+        })
+      : await db.order.findFirst({
+          where: orderWhere,
+          include: {
+            customer: {
+              include: {
+                user: { select: { id: true, name: true, phone: true, email: true } },
+              },
+            },
+            agent: {
+              include: {
+                user: { select: { id: true, name: true, phone: true, email: true } },
+              },
+            },
+            address: true,
+            items: { include: { category: true } },
+            statusHistory: { orderBy: { timestamp: 'desc' } },
+            payments: true,
+            invoices: true,
+            weightRecords: { orderBy: { createdAt: 'desc' }, take: 1 },
+            settlement: {
+              select: {
+                totalWeightKg: true,
+                amount: true,
+                status: true,
+              },
+            },
+          },
+        });
+
+    if (!order) {
+      return errorResponse('ORDER_NOT_FOUND', `Order #${id} not found.`, 404);
+    }
+
+    if (authUser.role === 'CUSTOMER') {
+      const customerUserId = order.customer && 'userId' in order.customer && typeof order.customer.userId === 'string'
+        ? order.customer.userId
+        : null;
+      if (!isCustomerOrderOwner({
+        customerId: order.customerId,
+        customer: { userId: customerUserId },
+      }, authUser)) {
+        return errorResponse('FORBIDDEN', 'You are not authorized to view details for this order.', 403);
+      }
+    } else if (authUser.role === 'AGENT') {
+      const targetAgentId = authUser.agentId ?? (
+        authUser.userId
+          ? (await db.agent.findUnique({
+              where: { userId: authUser.userId },
+              select: { id: true },
+            }))?.id
+          : null
+      );
+      const isAssignedAgent = Boolean(targetAgentId && order.agentId === targetAgentId);
+      const isUnassignedOpen = isOrderOpenForAssignment(order);
+      if (!isAssignedAgent && !isUnassignedOpen) {
+        return errorResponse('FORBIDDEN', 'Order is not assigned to your agent profile.', 403);
+      }
+
+      if (!isAssignedAgent) {
+        const [agent, activeOrder] = await Promise.all([
+          targetAgentId
+            ? db.agent.findUnique({
+                where: { id: targetAgentId },
+                select: { id: true, status: true, serviceAreas: true },
+              })
+            : Promise.resolve(null),
+          targetAgentId
+            ? db.order.findFirst({
+                where: {
+                  agentId: targetAgentId,
+                  status: { in: ['AGENT_ASSIGNED', 'AGENT_ACCEPTED', 'AGENT_ON_WAY', 'AGENT_ARRIVED', 'WASTE_VERIFICATION', 'WEIGHING'] },
+                },
+                select: { id: true },
+              })
+            : Promise.resolve(null),
+        ]);
+        if (!agent || agent.status !== 'AVAILABLE') {
+          return errorResponse('FORBIDDEN', 'Only available agents may view open pickup details.', 403);
+        }
+
+        if (activeOrder) {
+          return errorResponse('FORBIDDEN', 'An active pickup is already assigned to your agent profile.', 403);
+        }
+
+        if (order.financialDirection === 'CUSTOMER_PAYS' && order.paymentStatus !== 'CAPTURED') {
+          return errorResponse('FORBIDDEN', 'Pickup details are not available until customer payment is confirmed.', 403);
+        }
+
+        if (!isAgentEligibleForServiceArea(agent.serviceAreas, order.address?.area)) {
+          return errorResponse('FORBIDDEN', 'Order service area is not covered by your agent profile.', 403);
+        }
+
+        const candidates=await findEligibleAgentsForServiceArea(order.address?.area);
+        if(selectNearestEligibleAgent(candidates,order.address,order.address?.area)?.id!==targetAgentId)
+          return errorResponse('FORBIDDEN','This pickup is currently offered to another nearby agent.',403);
+        return successResponse({
+          id: order.id,
+          orderNumber: order.orderNumber,
+          agentId: order.agentId,
+          status: order.status,
+          address: { area: order.address?.area ?? null },
+          items: order.items.map((item: any) => ({
+            id: item.id,
+            categoryId: item.categoryId,
+            estimatedWeight: item.estimatedWeight,
+            category: item.category,
+          })),
+        });
+      }
+    }
+
+    if (authUser.role === 'AGENT') return successResponse(agentOrder(order));
+
+    const locations = order.agentId
+      ? await db.agentLocation.findMany({
+          where: { orderId: order.id, agentId: order.agentId },
+          orderBy: { timestamp: 'desc' },
+          take: 1,
+        })
+      : [];
+
+    const isAdmin = authUser?.role === 'ADMIN' || authUser?.role === 'SUPER_ADMIN';
+    const isStaff = isAdmin;
+    const hideAgentContact = !isAdmin;
+
+    const sanitizedAgent = order.agent
+      ? {
+          ...order.agent,
+          vehicleNumber: isStaff ? order.agent.vehicleNumber : null,
+          user: order.agent.user
+            ? {
+                ...order.agent.user,
+                phone: hideAgentContact ? null : order.agent.user.phone,
+              }
+            : order.agent.user,
+        }
+      : order.agent;
+
+    return successResponse({
+      ...order,
+      agent: sanitizedAgent,
+      locations,
+    });
+  } catch (err: any) {
+    console.error('Fetch order detail error:', {
+      code: err?.code || 'UNKNOWN',
+      name: err?.name || 'Error',
+    });
+    const errorMessage = String(err?.message || '');
+    const databaseUnavailable =
+      errorMessage.includes('Can\'t reach database server') ||
+      errorMessage.includes('Authentication failed against database server') ||
+      errorMessage.includes('P1001') ||
+      errorMessage.includes('P1000') ||
+      errorMessage.includes('[YOUR-PASSWORD]');
+
+    return errorResponse(
+      databaseUnavailable ? 'DATABASE_UNAVAILABLE' : 'INTERNAL_SERVER_ERROR',
+      databaseUnavailable
+        ? 'Order tracking is temporarily unavailable because the database is unreachable. Please try again shortly.'
+        : 'Failed to retrieve order details.',
+      databaseUnavailable ? 503 : 500
+    );
+  }
+}

@@ -1,0 +1,189 @@
+{
+  "serviceAreasData": [
+    {
+      "name": "JP Nagar (Phases 1 to 9)",
+      "etaMinutes": 20,
+      "basePickupCharge": 39,
+      "centerLat": 12.9077,
+      "centerLng": 77.5854,
+      "boundaryPolygon": "[[12.92,77.575],[12.92,77.6],[12.885,77.6],[12.885,77.575]]"
+    },
+    {
+      "name": "Jayanagar (Blocks 1 to 9)",
+      "etaMinutes": 20,
+      "basePickupCharge": 39,
+      "centerLat": 12.925,
+      "centerLng": 77.5938,
+      "boundaryPolygon": "[[12.94,77.578],[12.94,77.605],[12.915,77.605],[12.915,77.578]]"
+    },
+    {
+      "name": "Electronic City (Phase 1 & 2)",
+      "etaMinutes": 25,
+      "basePickupCharge": 49,
+      "centerLat": 12.8452,
+      "centerLng": 77.6602,
+      "boundaryPolygon": "[[12.865,77.64],[12.865,77.685],[12.82,77.685],[12.82,77.64]]"
+    },
+    {
+      "name": "Koramangala (Blocks 1 to 8)",
+      "etaMinutes": 25,
+      "basePickupCharge": 49,
+      "centerLat": 12.9352,
+      "centerLng": 77.6245,
+      "boundaryPolygon": "[[12.955,77.61],[12.955,77.645],[12.92,77.645],[12.92,77.61]]"
+    },
+    {
+      "name": "HSR Layout (Sectors 1 to 7)",
+      "etaMinutes": 25,
+      "basePickupCharge": 49,
+      "centerLat": 12.9121,
+      "centerLng": 77.6446,
+      "boundaryPolygon": "[[12.93,77.63],[12.93,77.665],[12.895,77.665],[12.895,77.63]]"
+    },
+    {
+      "name": "BTM Layout (1st & 2nd Stage)",
+      "etaMinutes": 20,
+      "basePickupCharge": 39,
+      "centerLat": 12.9166,
+      "centerLng": 77.6101,
+      "boundaryPolygon": "[[12.93,77.598],[12.93,77.625],[12.9,77.625],[12.9,77.598]]"
+    },
+    {
+      "name": "Yelahanka & Kogilu",
+      "etaMinutes": 25,
+      "basePickupCharge": 49,
+      "centerLat": 13.1007,
+      "centerLng": 77.5963,
+      "boundaryPolygon": "[[13.15,77.56],[13.15,77.63],[13.07,77.63],[13.07,77.56]]"
+    },
+    {
+      "name": "Hebbal, RT Nagar & Manyata",
+      "etaMinutes": 20,
+      "basePickupCharge": 39,
+      "centerLat": 13.0358,
+      "centerLng": 77.597,
+      "boundaryPolygon": "[[13.07,77.57],[13.07,77.64],[13.01,77.64],[13.01,77.57]]"
+    },
+    {
+      "name": "Whitefield, ITPL & Kadugodi",
+      "etaMinutes": 25,
+      "basePickupCharge": 49,
+      "centerLat": 12.9698,
+      "centerLng": 77.75,
+      "boundaryPolygon": "[[13.01,77.7],[13.01,77.78],[12.93,77.78],[12.93,77.7]]"
+    },
+    {
+      "name": "Indiranagar, Domlur & Marathahalli",
+      "etaMinutes": 20,
+      "basePickupCharge": 39,
+      "centerLat": 12.9784,
+      "centerLng": 77.6408,
+      "boundaryPolygon": "[[13,77.62],[13,77.7],[12.94,77.7],[12.94,77.62]]"
+    },
+    {
+      "name": "Rajajinagar & Malleshwaram",
+      "etaMinutes": 20,
+      "basePickupCharge": 39,
+      "centerLat": 12.9982,
+      "centerLng": 77.553,
+      "boundaryPolygon": "[[13.03,77.53],[13.03,77.58],[12.97,77.58],[12.97,77.53]]"
+    },
+    {
+      "name": "Vijayanagar, Nagarbhavi & Kengeri",
+      "etaMinutes": 25,
+      "basePickupCharge": 49,
+      "centerLat": 12.9719,
+      "centerLng": 77.53,
+      "boundaryPolygon": "[[13,77.47],[13,77.55],[12.89,77.55],[12.89,77.47]]"
+    },
+    {
+      "name": "MG Road, Shivajinagar & Richmond Town",
+      "etaMinutes": 20,
+      "basePickupCharge": 39,
+      "centerLat": 12.9756,
+      "centerLng": 77.6066,
+      "boundaryPolygon": "[[13,77.58],[13,77.62],[12.95,77.62],[12.95,77.58]]"
+    }
+  ],
+  "categories": [
+    {
+      "name": "Plastic Waste",
+      "description": "Bottles, containers, polythene, packaging materials, hard plastics",
+      "icon": "Recycle",
+      "type": "RECYCLABLE_BUY",
+      "pricePerKg": 18
+    },
+    {
+      "name": "Paper & Cardboard",
+      "description": "Carton boxes, newspapers, magazines, office paper, shredded paper",
+      "icon": "FileText",
+      "type": "RECYCLABLE_BUY",
+      "pricePerKg": 14
+    },
+    {
+      "name": "Scrap Metal",
+      "description": "Iron, steel, aluminium cans, copper wire, brass fittings, tin",
+      "icon": "Hammer",
+      "type": "RECYCLABLE_BUY",
+      "pricePerKg": 32
+    },
+    {
+      "name": "E-Waste",
+      "description": "Keyboards, chargers, old phones, motherboards, small appliances",
+      "icon": "Monitor",
+      "type": "RECYCLABLE_BUY",
+      "pricePerKg": 45
+    },
+    {
+      "name": "Household Dry Waste",
+      "description": "Clean dry packaging, fabric scraps, wooden pieces, rubber items",
+      "icon": "Trash2",
+      "type": "RECYCLABLE_BUY",
+      "pricePerKg": 8
+    },
+    {
+      "name": "Glass & Bottles",
+      "description": "Intact glass bottles, glass jars, non-broken glass scrap",
+      "icon": "Wine",
+      "type": "RECYCLABLE_BUY",
+      "pricePerKg": 4
+    },
+    {
+      "name": "Old Furniture & Heavy Scrap",
+      "description": "Chairs, tables, beds, metal frames, heavy bulky junk",
+      "icon": "Armchair",
+      "type": "WASTE_CHARGE",
+      "pricePerKg": 15
+    },
+    {
+      "name": "Appliances (Fridge/AC/Washing Machine)",
+      "description": "Refrigerators, AC units, washing machines, microwaves",
+      "icon": "Tv",
+      "type": "RECYCLABLE_BUY",
+      "pricePerKg": 25
+    }
+  ],
+  "subscriptionOffers": [
+    {
+      "name": "Quarterly",
+      "description": "Three months of subscription benefits.",
+      "durationMonths": 3,
+      "price": 299,
+      "benefitsJson": "[\"Priority support\",\"Exclusive pickup offers\"]"
+    },
+    {
+      "name": "Six Months",
+      "description": "Six months of subscription benefits.",
+      "durationMonths": 6,
+      "price": 399,
+      "benefitsJson": "[\"Priority support\",\"Exclusive pickup offers\",\"Extended member savings\"]"
+    },
+    {
+      "name": "Annual",
+      "description": "Twelve months of subscription benefits.",
+      "durationMonths": 12,
+      "price": 599,
+      "benefitsJson": "[\"Priority support\",\"Exclusive pickup offers\",\"Extended member savings\",\"Annual member rewards\"]"
+    }
+  ]
+}

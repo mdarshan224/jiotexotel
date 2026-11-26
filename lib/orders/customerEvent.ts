@@ -1,0 +1,2 @@
+/** Customer streams carry refresh signals and scoped GPS, never hydrated contact records. */
+export function customerEvent(payload:any){return {id:payload?.id,orderId:payload?.orderId??payload?.id,orderNumber:payload?.orderNumber,agentId:payload?.agentId,status:payload?.status,paymentStatus:payload?.paymentStatus,lat:payload?.lat,lng:payload?.lng,speed:payload?.speed,timestamp:payload?.timestamp};}

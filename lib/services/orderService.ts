@@ -1,0 +1,831 @@
+import {assignmentDeadline} from '../orders/assignmentDeadline';
+import { requestValue } from '../requestScope';
+import { db } from '../db';
+import {
+  findOrCreateUserCustomer,
+  saveCustomerAddress,
+} from './customerService';
+import { checkGeofenceServiceability } from './serviceAreaService';
+import {
+  ServiceAreaUnavailableError,
+  SERVICE_AREA_UNAVAILABLE_MESSAGE,
+} from '../validations/serviceArea';
+export { ServiceAreaUnavailableError };
+import { calculateTotalBookingWeight } from '../validations/schemas';
+import {
+  getCachedWasteCategories,
+  setCachedWasteCategories,
+} from '../cache/wasteCategoriesCache';
+import {
+  calculateOrderValuation,
+  calculatePickupSummary,
+  calculateTaxBreakdown,
+  PICKUP_SERVICE_CHARGE,
+  type CalculationItemInput,
+  type FinancialDirection,
+} from '../pricing';
+import { consumeSubscriptionPickupEntitlement, findAvailableSubscription } from '../subscriptions';
+import {
+  measureTiming,
+  monotonicNow,
+  recordTiming,
+} from '../observability/requestTiming';
+
+
+export class OrderIdempotencyConflictError extends Error {
+  constructor(
+    message = 'Idempotency key was already used for a different booking request.'
+  ) {
+    super(message);
+    this.name = 'OrderIdempotencyConflictError';
+  }
+}
+
+export class InvalidWasteCategoryError extends Error {
+  constructor(message = 'One or more selected waste categories are unavailable.') {
+    super(message);
+    this.name = 'InvalidWasteCategoryError';
+  }
+}
+
+export class InvalidBookingWeightError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidBookingWeightError';
+  }
+}
+
+export class InvalidIdempotencyKeyError extends Error {
+  constructor() {
+    super('Idempotency-Key must be 10-128 characters using letters, numbers, "_" or "-".');
+    this.name = 'InvalidIdempotencyKeyError';
+  }
+}
+
+export function normalizeOrderIdempotencyKey(key?: string | null) {
+  if (key == null || key.trim() === '') return null;
+  const normalized = key.trim();
+  if (!/^[A-Za-z0-9_-]{10,128}$/.test(normalized)) {
+    throw new InvalidIdempotencyKeyError();
+  }
+  return normalized;
+}
+
+export function createOrderPayloadHash(input: any): string {
+  const normItems = (input.items || [])
+    .map((item: any) => ({
+      categoryId: String(item.categoryId || ''),
+      estimatedWeight: Number(item.estimatedWeight) || 0,
+    }))
+    .sort((a: any, b: any) => a.categoryId.localeCompare(b.categoryId));
+
+  const canonical = {
+    phone: String(input.phone || '').replace(/\D/g, ''),
+    area: String(input.address?.area || '').trim().toLowerCase(),
+    houseNo: String(input.address?.houseNo || '').trim().toLowerCase(),
+    street: String(input.address?.street || '').trim().toLowerCase(),
+    pincode: String(input.address?.pincode || '').trim(),
+    lat: Number(input.address?.lat) || 0,
+    lng: Number(input.address?.lng) || 0,
+    items: normItems,
+    pickupType: input.pickupType || 'ASAP',
+    scheduledSlot: input.scheduledSlot || null,
+    scheduledFor: input.scheduledFor || null,
+    notes: String(input.notes || '').trim(),
+    financialDirection: input.financialDirection || 'CUSTOMER_PAYS',
+    useSubscription: Boolean(input.useSubscription),
+  };
+
+  return JSON.stringify(canonical);
+}
+
+// In-memory in-flight order promises to prevent race-condition duplicates
+const inFlightOrders = () => requestValue('inFlightOrders', () => new Map<string, Promise<any>>());
+
+// In-memory Idempotency Store to prevent duplicate order placements
+// on network retries.
+const idempotencyStore = new Map<
+  string,
+  {
+    orderId: string;
+    responseData: any;
+    timestamp: number;
+    payloadHash?: string;
+  }
+>();
+
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+
+export function generateOrderNumber(): string {
+  const dateStr = new Date()
+    .toISOString()
+    .slice(0, 10)
+    .replace(/-/g, '');
+
+  const randomHex = Math.random()
+    .toString(36)
+    .substring(2, 8)
+    .toUpperCase();
+
+  return `JIO-${dateStr}-${randomHex}`;
+}
+
+export async function createOrder(
+  input: {
+    phone: string;
+    name: string;
+
+    address: {
+      label?: string;
+      houseNo: string;
+      building?: string;
+      street: string;
+      area: string;
+      landmark?: string;
+      pincode: string;
+      lat: number;
+      lng: number;
+      googlePlaceId?: string | null;
+    };
+
+    items: {
+      categoryId: string;
+      estimatedWeight: number;
+    }[];
+
+    pickupType?: 'ASAP' | 'SCHEDULED';
+    scheduledSlot?: string | null;
+    scheduledFor?: string | null;
+    couponCode?: string | null;
+    photos?: string[];
+    notes?: string;
+    financialDirection?:
+      | 'CUSTOMER_PAYS'
+      | 'JUNKITOUT_PAYS';
+    useSubscription?: boolean;
+    paymentMethod?: 'WALLET' | 'RAZORPAY';
+  },
+
+  idempotencyKey?: string | null,
+
+  authUser?: {
+    userId: string;
+    customerId?: string | null;
+  } | null,
+  timer?: { recordPhase: (phase: string) => number }
+) {
+  // ---------------------------------------------------------
+  // 1. IDEMPOTENCY CHECK
+  // ---------------------------------------------------------
+
+  const payloadHash = createOrderPayloadHash(input);
+  const normalizedIdempotencyKey = normalizeOrderIdempotencyKey(idempotencyKey);
+  const customerId = authUser?.customerId;
+  const durableIdempotency = (db as any).orderIdempotency;
+  let durableIdempotencyAvailable = Boolean(durableIdempotency);
+
+  if (normalizedIdempotencyKey) {
+    const inFlight = inFlightOrders().get(`${customerId || 'anonymous'}:${normalizedIdempotencyKey}:${payloadHash}`);
+    if (inFlight) {
+      return await inFlight;
+    }
+
+    const cached = idempotencyStore.get(`${customerId || 'anonymous'}:${normalizedIdempotencyKey}`);
+
+    if (
+      cached &&
+      Date.now() - cached.timestamp <
+        IDEMPOTENCY_TTL_MS
+    ) {
+      if (cached.payloadHash && cached.payloadHash !== payloadHash) {
+        throw new OrderIdempotencyConflictError(
+          'Idempotency key was already used for a different booking payload. Please start a new booking or retry with the original details.'
+        );
+      }
+
+      console.log(
+        `[IDEMPOTENCY] Returning existing order #${cached.orderId}`
+      );
+
+      return cached.responseData;
+    }
+  }
+
+  if (normalizedIdempotencyKey && customerId && durableIdempotencyAvailable) {
+    try {
+      const existing = await measureTiming<any>(
+        'order.idempotency.lookup',
+        () => durableIdempotency.findUnique({
+          where: { customerId_key: { customerId, key: normalizedIdempotencyKey } },
+        }),
+      );
+      if (existing) {
+        if (existing.payloadHash !== payloadHash) {
+          throw new OrderIdempotencyConflictError();
+        }
+        const persistedOrder = await measureTiming(
+          'order.idempotency.persisted_order_lookup',
+          () => db.order.findUnique({
+            where: { id: existing.orderId },
+            include: {
+            customer: {
+              include: {
+                user: {
+                  select: {
+                    id: true,
+                    name: true,
+                    phone: true,
+                    email: true,
+                  },
+                },
+              },
+            },
+            address: true,
+            items: { include: { category: true } },
+            statusHistory: true,
+            payments: {
+              where: { direction: 'CUSTOMER_PAYS' },
+              orderBy: { createdAt: 'desc' },
+              take: 1,
+            },
+            },
+          }),
+        );
+        if (!persistedOrder) {
+          throw new Error('The idempotent order record no longer exists.');
+        }
+        return persistedOrder;
+      }
+    } catch (error: any) {
+      if (error?.code !== 'P2021') {
+        throw error;
+      }
+      durableIdempotencyAvailable = false;
+    }
+  }
+
+  const execute = async () => {
+    timer?.recordPhase('idempotency_lookup');
+
+  // ---------------------------------------------------------
+  // 2. PARALLEL LOOKUP: GEOFENCE, USER PROFILE, AND WASTE CATEGORIES
+  // ---------------------------------------------------------
+  const categoryIds = input.items.map(
+    (item) => item.categoryId
+  );
+
+  const [geofence, initialUser, dbCategories] = await Promise.all([
+    measureTiming(
+      'order.lookup.geofence',
+      () => checkGeofenceServiceability(
+        input.address.lat,
+        input.address.lng,
+        input.address.area
+      ),
+    ),
+    (authUser as any)?.user?.customer
+      ? Promise.resolve((authUser as any).user)
+      : authUser?.userId
+      ? measureTiming(
+          'order.lookup.customer_profile',
+          () => db.user.findUnique({
+            where: {
+              id: authUser.userId,
+            },
+            include: {
+              customer: true,
+              addresses: {
+                where: { isDefault: true },
+                take: 1,
+              },
+            },
+          }),
+        )
+      : measureTiming(
+          'order.lookup.customer_profile',
+          () => findOrCreateUserCustomer(input.phone, input.name),
+        ),
+    measureTiming(
+      'order.lookup.waste_categories',
+      async () => {
+        const cached = getCachedWasteCategories();
+        if (cached && Array.isArray(cached)) {
+          const matching = cached.filter((c: any) => c.active && categoryIds.includes(c.id));
+          if (matching.length === categoryIds.length) {
+            return matching;
+          }
+        }
+        const fetched = await db.wasteCategory.findMany({
+          where: {
+            id: {
+              in: categoryIds,
+            },
+            active: true,
+          },
+        });
+        if (fetched && fetched.length > 0) {
+          setCachedWasteCategories(fetched);
+        }
+        return fetched;
+      },
+    ),
+  ]);
+
+  timer?.recordPhase('parallel_lookups');
+  if (!geofence.serviceable) {
+    throw new ServiceAreaUnavailableError(
+      geofence.message || SERVICE_AREA_UNAVAILABLE_MESSAGE
+    );
+  }
+
+  // ---------------------------------------------------------
+  // 3. USER & CUSTOMER PROFILE
+  // ---------------------------------------------------------
+
+  let user: any = initialUser;
+
+  if (!user || !user.customer) {
+    user = await measureTiming(
+      'order.customer_profile.ensure',
+      () => findOrCreateUserCustomer(input.phone, input.name),
+    );
+  }
+
+  if (!user.customer) {
+    throw new Error(
+      'Could not initialize customer profile.'
+    );
+  }
+
+  // ---------------------------------------------------------
+  // 4. SAVE PICKUP ADDRESS (Reuses existing default if identical, skips redundant updateMany)
+  // ---------------------------------------------------------
+
+  const existingDefaultAddr = user.addresses?.[0];
+  const hasExistingDefault = Boolean(existingDefaultAddr);
+  const isIdenticalAddress =
+    existingDefaultAddr &&
+    existingDefaultAddr.houseNo?.trim().toLowerCase() === input.address.houseNo?.trim().toLowerCase() &&
+    existingDefaultAddr.street?.trim().toLowerCase() === input.address.street?.trim().toLowerCase() &&
+    existingDefaultAddr.area?.trim().toLowerCase() === input.address.area?.trim().toLowerCase() &&
+    existingDefaultAddr.pincode?.trim() === input.address.pincode?.trim() &&
+    (input.address.building ? (existingDefaultAddr.building || '').trim().toLowerCase() === input.address.building.trim().toLowerCase() : true) &&
+    (input.address.landmark ? (existingDefaultAddr.landmark || '').trim().toLowerCase() === input.address.landmark.trim().toLowerCase() : true);
+
+  const savedAddress = isIdenticalAddress
+    ? existingDefaultAddr
+    : await measureTiming(
+        'order.address.save',
+        () => saveCustomerAddress(
+          user.id,
+          {
+          label: input.address.label || 'Home',
+          name: input.name,
+          phone: input.phone,
+          houseNo: input.address.houseNo,
+          building: input.address.building,
+          street: input.address.street,
+          area: input.address.area,
+          landmark: input.address.landmark,
+          pincode: input.address.pincode,
+          lat: input.address.lat,
+          lng: input.address.lng,
+          googlePlaceId:
+            input.address.googlePlaceId ||
+            undefined,
+          isDefault: true,
+          },
+          { hasExistingDefault }
+        ),
+      );
+
+  timer?.recordPhase('save_customer_address');
+
+  // ---------------------------------------------------------
+  // 5. VALIDATE WASTE CATEGORIES & WEIGHT
+  // ---------------------------------------------------------
+
+  const activeCategoryIds = new Set(dbCategories.map((category) => category.id));
+  if (categoryIds.some((categoryId) => !activeCategoryIds.has(categoryId))) {
+    throw new InvalidWasteCategoryError(
+      'One or more selected waste categories are unavailable. Please refresh and try again.',
+    );
+  }
+
+  const totalBookingWeight = calculateTotalBookingWeight(input.items);
+  if (
+    input.items.some(
+      (item) =>
+        typeof item.estimatedWeight !== 'number' ||
+        !Number.isFinite(item.estimatedWeight) ||
+        item.estimatedWeight <= 0,
+    ) ||
+    !Number.isFinite(totalBookingWeight)
+  ) {
+    throw new InvalidBookingWeightError(
+      'Booking weights must be finite positive values and produce a finite total.',
+    );
+  }
+  for (const category of dbCategories) {
+    if (
+      Number.isFinite(category.minWeightKg) &&
+      totalBookingWeight < category.minWeightKg
+    ) {
+      throw new InvalidBookingWeightError(
+        `Total booking weight must be at least ${category.minWeightKg} kg for ${category.name}.`,
+      );
+    }
+    if (
+      Number.isFinite(category.maxWeightKg) &&
+      totalBookingWeight > category.maxWeightKg
+    ) {
+      throw new InvalidBookingWeightError(
+        `Total booking weight must not exceed ${category.maxWeightKg} kg for ${category.name}.`,
+      );
+    }
+  }
+
+  let activeSub: any = null;
+  if (input.useSubscription) {
+    if (!user?.customer?.id) {
+      throw new Error('Customer profile required to use subscription plan.');
+    }
+    const now = new Date();
+    activeSub = await findAvailableSubscription(db, user.customer.id, now);
+    if (!activeSub) {
+      throw new Error('No active subscription found. Please subscribe or book without subscription.');
+    }
+    if (activeSub.pickupsAllowed > 0 && activeSub.pickupsUsed >= activeSub.pickupsAllowed) {
+      throw new Error('Subscription pickup allowance reached for this cycle. Please renew your subscription.');
+    }
+  }
+
+  const basePickupCharge = input.useSubscription && activeSub ? 0.0 : PICKUP_SERVICE_CHARGE;
+  const urgentSurcharge = (input.pickupType as string) === 'URGENT' ? 29.0 : 0.0;
+
+  const calculationItems: CalculationItemInput[] = input.items.map((item) => {
+    const category = dbCategories.find((cat) => cat.id === item.categoryId);
+    if (
+      !category ||
+      typeof category.pricePerKg !== 'number' ||
+      !Number.isFinite(category.pricePerKg) ||
+      category.pricePerKg < 0
+    ) {
+      throw new InvalidWasteCategoryError(
+        'One or more selected waste categories have an invalid price.'
+      );
+    }
+    return {
+      categoryId: item.categoryId,
+      categoryName: category.name || item.categoryId,
+      type: category.type || 'RECYCLABLE_BUY',
+      pricePerKg: category.pricePerKg,
+      weightKg: item.estimatedWeight,
+    };
+  });
+
+  timer?.recordPhase('order_valuation');
+
+  const pickupSummary = calculatePickupSummary(calculationItems, basePickupCharge);
+
+  // Authoritative valuation using standardized engine (coupons removed)
+  const valuation = calculateOrderValuation(
+    calculationItems,
+    basePickupCharge,
+    0.0,
+    urgentSurcharge,
+    { applySpecialPricing: true }
+  );
+
+  const orderItemsData = pickupSummary.items.map((vi) => ({
+    categoryId: vi.categoryId,
+    estimatedWeight: vi.weightKg,
+    ratePerKg: vi.pricePerKg,
+    subtotal: vi.materialAmount,
+  }));
+
+  const financialDirection = input.financialDirection === 'JUNKITOUT_PAYS'
+    ? valuation.financialDirection
+    : 'CUSTOMER_PAYS';
+
+  const estimatedTotal = pickupSummary.pickupValue;
+  const finalAmount = financialDirection === 'CUSTOMER_PAYS'
+    ? pickupSummary.totalAmountPayable
+    : valuation.netAmount;
+
+  const orderNumber =
+    generateOrderNumber();
+
+  // ---------------------------------------------------------
+  // 8. CREATE ORDER
+  // ---------------------------------------------------------
+  // Note: Prisma executes nested creates (items, statusHistory) atomically
+  // in a single database transaction internally, avoiding interactive
+  // transaction timeout (P2028) contention.
+
+  let newOrder: any;
+  try {
+    const transactionStartedAt = monotonicNow();
+    newOrder = await measureTiming(
+      'order.db_transaction.total',
+      () => db.$transaction(
+        async (tx) => {
+        recordTiming('order.db_transaction.connection_acquisition_estimate', {
+          durationMs: Number((monotonicNow() - transactionStartedAt).toFixed(2)),
+          outcome: 'success',
+        });
+
+        let appliedSubscriptionId: string | null = null;
+        if (input.useSubscription && activeSub) {
+          const entitlement = await consumeSubscriptionPickupEntitlement(tx, {
+            customerId: user.customer!.id,
+          });
+          if (!entitlement.eligible) {
+            if (entitlement.reason === 'LIMIT_EXCEEDED') {
+              throw new Error('Subscription pickup allowance reached for this cycle. Please renew your subscription.');
+            }
+            throw new Error('Subscription is no longer active or has expired.');
+          }
+          appliedSubscriptionId = entitlement.subscription.id;
+        }
+
+        const deadline=assignmentDeadline(input.pickupType||'ASAP',input.scheduledFor);
+        const createdOrder = await tx.order.create({
+          data: {
+            orderNumber,
+            ...deadline,
+
+            customerId:
+              user.customer!.id,
+
+            addressId:
+              savedAddress.id,
+
+            pickupType:
+              input.pickupType || 'ASAP',
+
+            scheduledSlot:
+              input.scheduledSlot || null,
+
+            status:
+              'BOOKING_RECEIVED',
+
+            financialDirection,
+
+            estimatedTotal,
+
+            pickupCharge:
+              basePickupCharge,
+
+            pickupFee:
+              basePickupCharge,
+
+            serviceFee:
+              0.0,
+
+            taxableAmount:
+              0.0,
+
+            gstRate:
+              0.18,
+
+            gstAmount:
+              0.0,
+
+            cgstAmount:
+              0.0,
+
+            sgstAmount:
+              0.0,
+
+            igstAmount:
+              0.0,
+
+            discountAmount:
+              0.0,
+
+            finalAmount,
+
+            subscriptionId:
+              appliedSubscriptionId,
+
+            // IMPORTANT:
+            // Order starts unpaid unless finalAmount is 0
+            paymentStatus:
+              finalAmount === 0 ? 'PAID' : 'PENDING',
+
+            ...(financialDirection === 'CUSTOMER_PAYS' && finalAmount > 0
+              ? {
+                  payments: {
+                    create: {
+                      amount: finalAmount,
+                      direction: 'CUSTOMER_PAYS',
+                      gateway: input.paymentMethod === 'WALLET' ? 'WALLET' : 'RAZORPAY',
+                      status: input.paymentMethod === 'WALLET' ? 'PENDING' : 'CREATION_PENDING',
+                    },
+                  },
+                }
+              : {}),
+
+            wastePhotos:
+              JSON.stringify(
+                input.photos || []
+              ),
+
+            notes:
+              input.notes || null,
+
+            items: {
+              create:
+                orderItemsData,
+            },
+
+            statusHistory: {
+              create: {
+                oldStatus: null,
+
+                newStatus:
+                  'BOOKING_RECEIVED',
+
+                changedByUserId:
+                  user.id,
+
+                notes:
+                  appliedSubscriptionId
+                    ? (financialDirection === 'CUSTOMER_PAYS' && finalAmount > 0
+                        ? `Order placed with Subscription Pass (#${appliedSubscriptionId}). Doorstep pickup fee waived. Payment pending for remaining balance.`
+                        : `Order placed with Subscription Pass (#${appliedSubscriptionId}). Doorstep pickup fee waived.`)
+                    : (financialDirection === 'CUSTOMER_PAYS' ? 'Order placed by customer via web platform. Payment pending.' : `Order placed by customer via web platform. Estimated scrap payout: ₹${finalAmount.toFixed(2)}.`),
+              },
+            },
+          },
+
+          include: {
+            items: true,
+            payments: {
+              where: { direction: 'CUSTOMER_PAYS' },
+              orderBy: { createdAt: 'desc' },
+              take: 1,
+            },
+          },
+        });
+
+        if (normalizedIdempotencyKey && customerId && durableIdempotencyAvailable) {
+          await (tx as any).orderIdempotency.create({
+            data: {
+              customerId,
+              key: normalizedIdempotencyKey,
+              payloadHash,
+              orderId: createdOrder.id,
+              expiresAt: new Date(Date.now() + IDEMPOTENCY_TTL_MS),
+            },
+          });
+        }
+
+        const assembledCustomer = user?.customer
+          ? {
+              ...user.customer,
+              user: user
+                ? {
+                    id: user.id,
+                    name: user.name || '',
+                    phone: user.phone || '',
+                    email: user.email || null,
+                  }
+                : null,
+            }
+          : (createdOrder as any).customer || null;
+
+        const assembledOrder = {
+          ...createdOrder,
+          customer: assembledCustomer,
+          address: savedAddress || (createdOrder as any).address || null,
+          items: (createdOrder.items || []).map((item: any) => ({
+            ...item,
+            category: item.category || dbCategories.find((c: any) => c.id === item.categoryId) || null,
+          })),
+          statusHistory:
+            (createdOrder as any).statusHistory && (createdOrder as any).statusHistory.length > 0
+              ? (createdOrder as any).statusHistory
+              : [
+                  {
+                    id: `hist-${createdOrder.id}`,
+                    orderId: createdOrder.id,
+                    oldStatus: null,
+                    newStatus: 'BOOKING_RECEIVED',
+                    status: 'BOOKING_RECEIVED',
+                    changedByUserId: user?.id || null,
+                    notes: 'Order placed by customer via web platform. Payment pending.',
+                    timestamp: createdOrder.createdAt,
+                    createdAt: createdOrder.createdAt,
+                  },
+                ],
+        };
+
+        return assembledOrder;
+        },
+        {
+          maxWait: 5000,
+          timeout: 15000,
+        }
+      ),
+    );
+    timer?.recordPhase('order_creation_tx');
+  } catch (error: any) {
+    if (
+      normalizedIdempotencyKey &&
+      customerId &&
+      durableIdempotencyAvailable &&
+      (error?.code === 'P2002' || /unique constraint/i.test(String(error?.message || '')))
+    ) {
+      const existing = await durableIdempotency.findUnique({
+        where: { customerId_key: { customerId, key: normalizedIdempotencyKey } },
+      });
+      if (existing) {
+        if (existing.payloadHash !== payloadHash) {
+          throw new OrderIdempotencyConflictError();
+        }
+        const persistedOrder = await db.order.findUnique({
+          where: { id: existing.orderId },
+          include: {
+            customer: {
+              include: {
+                user: {
+                  select: {
+                    id: true,
+                    name: true,
+                    phone: true,
+                    email: true,
+                  },
+                },
+              },
+            },
+            address: true,
+            items: { include: { category: true } },
+            statusHistory: true,
+            payments: {
+              where: { direction: 'CUSTOMER_PAYS' },
+              orderBy: { createdAt: 'desc' },
+              take: 1,
+            },
+          },
+        });
+        if (persistedOrder) return persistedOrder;
+      }
+    }
+    throw error;
+  }
+
+  // ---------------------------------------------------------
+  // 9. IMPORTANT
+  // ---------------------------------------------------------
+  //
+  // DO NOT DISPATCH TO AGENTS HERE.
+  //
+  // Razorpay payment must be completed and verified first.
+  //
+  // The dispatch now happens from:
+  //
+  // lib/payments/verification.ts
+  //
+  // after paymentStatus becomes CAPTURED.
+  // ---------------------------------------------------------
+
+  // ---------------------------------------------------------
+  // 10. STORE IDEMPOTENCY RESPONSE
+  // ---------------------------------------------------------
+
+  if (normalizedIdempotencyKey) {
+    idempotencyStore.set(
+      `${customerId || 'anonymous'}:${normalizedIdempotencyKey}`,
+      {
+        orderId:
+          newOrder.id,
+
+        responseData:
+          newOrder,
+
+        timestamp:
+          Date.now(),
+
+        payloadHash,
+      }
+    );
+  }
+
+  return newOrder;
+  };
+
+  const promise = execute();
+  if (normalizedIdempotencyKey) {
+    inFlightOrders().set(`${customerId || 'anonymous'}:${normalizedIdempotencyKey}:${payloadHash}`, promise);
+  }
+
+  try {
+    return await promise;
+  } finally {
+    if (normalizedIdempotencyKey) {
+      inFlightOrders().delete(`${customerId || 'anonymous'}:${normalizedIdempotencyKey}:${payloadHash}`);
+    }
+  }
+}

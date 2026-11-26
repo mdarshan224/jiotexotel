@@ -1,0 +1,205 @@
+import assert from "node:assert/strict";
+import { db } from "../lib/db";
+import {
+  createOrder,
+  createOrderPayloadHash,
+  OrderIdempotencyConflictError,
+} from "../lib/services/orderService";
+
+const input = {
+  phone: "5550001234",
+  name: "Isolated Test Customer",
+  address: {
+    houseNo: "1",
+    street: "Test Street",
+    area: "JP Nagar",
+    pincode: "560078",
+    lat: 12.9077,
+    lng: 77.5854,
+  },
+  items: [{ categoryId: "test-category", estimatedWeight: 5 }],
+};
+
+async function run() {
+  const original = {
+    userFindUnique: (db as any).user.findUnique,
+    serviceAreaFindMany: (db as any).serviceArea.findMany,
+    addressUpdateMany: (db as any).address.updateMany,
+    addressCreate: (db as any).address.create,
+    categoryFindMany: (db as any).wasteCategory.findMany,
+    couponFindUnique: (db as any).coupon.findUnique,
+    orderFindFirst: (db as any).order.findFirst,
+    orderFindUnique: (db as any).order.findUnique,
+    orderIdempotency: (db as any).orderIdempotency,
+    transaction: (db as any).$transaction,
+  };
+
+  const customer = {
+    id: "isolated-customer-id",
+    userId: "isolated-user-id",
+  };
+  const user = {
+    id: customer.userId,
+    customer,
+    role: "CUSTOMER",
+  };
+  const otherCustomer = {
+    id: "isolated-other-customer-id",
+    userId: "isolated-other-user-id",
+  };
+  const otherUser = {
+    id: otherCustomer.userId,
+    customer: otherCustomer,
+    role: "CUSTOMER",
+  };
+
+  let orders: any[] = [];
+  let nextOrderId = 1;
+  let failNextOrderCreate = false;
+  const idempotencyRecords = new Map<string, any>();
+
+  (db as any).user.findUnique = async ({ where }: any) =>
+    where.id === otherUser.id ? otherUser : user;
+  (db as any).serviceArea.findMany = async () => [{
+    id: "jp-nagar",
+    name: "JP Nagar (Phases 1 to 9)",
+    status: "ACTIVE",
+    boundaryPolygon: "[[12.88,77.57],[12.92,77.57],[12.92,77.60],[12.88,77.60]]",
+    etaMinutes: 20,
+    basePickupCharge: 50,
+  }];
+  (db as any).address.updateMany = async () => ({ count: 0 });
+  (db as any).address.create = async () => ({ id: "isolated-address-id" });
+  (db as any).wasteCategory.findMany = async () => [
+    { id: "test-category", name: "Test Category", pricePerKg: 10, active: true },
+  ];
+  (db as any).coupon.findUnique = async () => null;
+  (db as any).order.findFirst = async () => null;
+  (db as any).order.findUnique = async ({ where }: any) =>
+    orders.find((o) => o.id === where.id) || null;
+  (db as any).orderIdempotency = {
+    findUnique: async ({ where }: any) => {
+      const key = `${where.customerId_key.customerId}:${where.customerId_key.key}`;
+      return idempotencyRecords.get(key) || null;
+    },
+  };
+
+  (db as any).$transaction = async (callback: (tx: any) => Promise<any>) => {
+    let pendingKey: string | null = null;
+    let pendingRecord: any = null;
+
+    const tx = {
+      order: {
+        create: async ({ data }: any) => {
+          if (failNextOrderCreate) {
+            failNextOrderCreate = false;
+            throw new Error("simulated order insert failure");
+          }
+          const created = {
+            id: `isolated-order-${nextOrderId++}`,
+            orderNumber: `JIO-ISOLATED-${nextOrderId}`,
+            ...data,
+            customer: { user },
+            address: { id: "isolated-address-id", area: "Test Area" },
+            items: data.items?.create || [],
+            statusHistory: [{ newStatus: data.status }],
+          };
+          orders.push(created);
+          return created;
+        },
+      },
+      orderIdempotency: {
+        create: async ({ data }: any) => {
+          const key = `${data.customerId}:${data.key}`;
+          if (idempotencyRecords.has(key)) {
+            const err: any = new Error('Unique constraint failed on the fields: (`customerId`,`key`)');
+            err.code = 'P2002';
+            throw err;
+          }
+          pendingKey = key;
+          pendingRecord = data;
+          return data;
+        },
+      },
+    };
+
+    const result = await callback(tx);
+    if (pendingKey && pendingRecord) {
+      idempotencyRecords.set(pendingKey, pendingRecord);
+    }
+    return result;
+  };
+
+  const authUser = { userId: user.id, customerId: customer.id };
+  const restore = () => {
+    (db as any).user.findUnique = original.userFindUnique;
+    (db as any).serviceArea.findMany = original.serviceAreaFindMany;
+    (db as any).address.updateMany = original.addressUpdateMany;
+    (db as any).address.create = original.addressCreate;
+    (db as any).wasteCategory.findMany = original.categoryFindMany;
+    (db as any).coupon.findUnique = original.couponFindUnique;
+    (db as any).order.findFirst = original.orderFindFirst;
+    (db as any).order.findUnique = original.orderFindUnique;
+    (db as any).orderIdempotency = original.orderIdempotency;
+    (db as any).$transaction = original.transaction;
+  };
+
+  try {
+    const retryKey = `isolated-retry-key-${Date.now()}`;
+    const first = await createOrder(input, retryKey, authUser);
+    assert.ok(first?.id, "initial order must be created");
+    // Verify exact server-side pickup summary calculation:
+    // 5 kg × ₹10/kg = ₹50 Pickup Value + ₹0 Service Charge (waived) = ₹50 Total Amount Payable
+    assert.equal(first.estimatedTotal, 50, "estimatedTotal must equal Pickup Value (5kg × ₹10/kg = ₹50)");
+    assert.equal(first.pickupCharge, 0, "pickupCharge must equal waived ₹0 service charge");
+    assert.equal(first.finalAmount, 50, "finalAmount must equal Pickup Value when service charge is waived (₹50)");
+    assert.equal(first.payments?.create?.amount, 50, "Razorpay payment record must match finalAmount (₹50)");
+
+    const retry = await createOrder(input, retryKey, authUser);
+    assert.equal(retry.id, first.id, "retry must return the persisted order");
+    assert.equal(orders.length, 1, "retry must not create a second order");
+
+    const separateBooking = await createOrder(input, `different-key-${Date.now()}`, authUser);
+    assert.notEqual(separateBooking.id, first.id, "different keys represent distinct bookings");
+    assert.equal(orders.length, 2);
+
+    await assert.rejects(
+      createOrder({ ...input, notes: "changed payload" }, retryKey, authUser),
+      OrderIdempotencyConflictError,
+      "reusing key with changed payload must reject with OrderIdempotencyConflictError"
+    );
+
+    const anotherRetry = await createOrder(input, retryKey, authUser);
+    assert.equal(anotherRetry.id, first.id, "multiple retries with identical key must return same order");
+
+    failNextOrderCreate = true;
+    const rollbackKey = `rollback-key-${Date.now()}`;
+    await assert.rejects(createOrder(input, rollbackKey, authUser), /simulated order insert failure/);
+    const afterRollback = await createOrder(input, rollbackKey, authUser);
+    assert.ok(afterRollback.id, "a rolled-back key can be safely retried");
+
+    const crossCustomerKey = `cross-customer-key-${Date.now()}`;
+    const crossCustomerOrder = await createOrder(
+      input,
+      crossCustomerKey,
+      { userId: otherUser.id, customerId: otherCustomer.id }
+    );
+    assert.ok(crossCustomerOrder?.id, "other customer can use key");
+
+    const sameKeyPrimaryCustomer = await createOrder(input, crossCustomerKey, authUser);
+    assert.notEqual(
+      sameKeyPrimaryCustomer.id,
+      crossCustomerOrder.id,
+      "idempotency keys are customer-scoped and cannot collide across different customers"
+    );
+
+    console.log("Order creation idempotency tests passed.");
+  } finally {
+    restore();
+  }
+}
+
+void run().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

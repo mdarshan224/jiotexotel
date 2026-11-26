@@ -1,0 +1,64 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { db } from '@/lib/db';
+import { getAuthUser } from '@/lib/auth/middleware';
+
+export async function GET(req: NextRequest) {
+  try {
+    const authUser = await getAuthUser(req);
+    if (!authUser) {
+      return NextResponse.json({ success: false, message: 'Authentication is required.' }, { status: 401 });
+    }
+    if (authUser.role !== 'SUPER_ADMIN') {
+      return NextResponse.json({
+        success: false,
+        message: 'Super admin authorization required for database schema operations.',
+      }, { status: 403 });
+    }
+
+    // 1. Read-only Schema Inspection (Runtime DDL is removed for security)
+    const columnCheck: any[] = await db.$queryRawUnsafe('PRAGMA table_info("Complaint")');
+    const isNullable = columnCheck.find(column => column.name === 'orderId')?.notnull === 0;
+
+    const [complaintCount, orderCount, customerCount, userCount] = await Promise.all([
+      db.complaint.count(),
+      db.order.count(),
+      db.customer.count(),
+      db.user.count(),
+    ]);
+
+    await db.auditLog.create({
+      data: {
+        userId: authUser.userId,
+        userName: authUser.name,
+        action: 'SCHEMA_STATUS_INSPECTED',
+        oldValue: null,
+        newValue: "Complaint.orderId nullable: " + isNullable + ". Runtime DDL execution retired; use version-controlled Prisma migrations.",
+      },
+    }).catch(() => null);
+
+    return NextResponse.json({
+      success: true,
+      message: 'Complaint schema diagnostic complete. No schema changes were made.',
+      details: {
+        targetTable: 'Complaint',
+        targetColumn: 'orderId',
+        initialNullable: isNullable,
+        syncExecuted: false,
+        isNullable,
+        migrationStrategy: 'SITES_D1_MIGRATIONS',
+        recordsPreserved: {
+          complaints: complaintCount,
+          orders: orderCount,
+          customers: customerCount,
+          users: userCount,
+        },
+        tablesDropped: 0,
+        dataLoss: false,
+        unrelatedSchemaChanges: false,
+      },
+    });
+  } catch (error: any) {
+    console.error('Schema sync error:', error);
+    return NextResponse.json({ success: false, message: error.message || 'Schema sync failed.' }, { status: 500 });
+  }
+}

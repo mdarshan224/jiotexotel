@@ -1,0 +1,84 @@
+const RAZORPAY_SCRIPT_ID = 'razorpay-checkout-script';
+const RAZORPAY_SCRIPT_SRC = 'https://checkout.razorpay.com/v1/checkout.js';
+
+let razorpayScriptPromise: Promise<boolean> | null = null;
+
+export function hasRazorpay(): boolean {
+  return typeof (window as Window & { Razorpay?: unknown }).Razorpay === 'function';
+}
+
+export function loadRazorpayScript(): Promise<boolean> {
+  if (typeof window === 'undefined') return Promise.resolve(false);
+  if (hasRazorpay()) return Promise.resolve(true);
+  if (razorpayScriptPromise) return razorpayScriptPromise;
+
+  razorpayScriptPromise = new Promise((resolve) => {
+    if (hasRazorpay()) {
+      resolve(true);
+      return;
+    }
+
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout>;
+    const finish = (loaded: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (!loaded) razorpayScriptPromise = null;
+      resolve(loaded);
+    };
+
+    timeout = setTimeout(() => {
+      if (!hasRazorpay()) document.getElementById(RAZORPAY_SCRIPT_ID)?.remove();
+      finish(hasRazorpay());
+    }, 15000);
+
+    const existing = document.getElementById(
+      RAZORPAY_SCRIPT_ID,
+    ) as HTMLScriptElement | null;
+
+    if (existing) {
+      if (hasRazorpay()) {
+        finish(true);
+        return;
+      }
+      if (existing.getAttribute('data-loaded') === 'true' || existing.getAttribute('data-failed') === 'true') {
+        existing.remove();
+      } else {
+        existing.addEventListener('load', () => {
+          existing.setAttribute('data-loaded', 'true');
+          finish(hasRazorpay());
+        }, {
+          once: true,
+        });
+        existing.addEventListener('error', () => {
+          existing.setAttribute('data-failed', 'true');
+          finish(false);
+        }, { once: true });
+        return;
+      }
+    }
+
+    const script = document.createElement('script');
+    script.id = RAZORPAY_SCRIPT_ID;
+    script.src = RAZORPAY_SCRIPT_SRC;
+    script.async = true;
+    script.onload = () => {
+      script.setAttribute('data-loaded', 'true');
+      finish(hasRazorpay());
+    };
+    script.onerror = () => {
+      script.setAttribute('data-failed', 'true');
+      finish(false);
+    };
+    document.head.appendChild(script);
+  });
+
+  return razorpayScriptPromise;
+}
+
+export function preloadRazorpayScript(): void {
+  if (typeof window !== 'undefined') {
+    loadRazorpayScript().catch(() => {});
+  }
+}

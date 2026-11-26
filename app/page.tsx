@@ -1,0 +1,600 @@
+'use client';
+
+import Link from '@/components/AppLink';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  ArrowRight,
+  BadgeIndianRupee,
+  Clock3,
+  MapPinned,
+  Recycle,
+  ShieldCheck,
+  ShoppingBasket,
+  Sparkles,
+  Truck,
+  Package,
+  FileText,
+  Cpu,
+  Wine,
+  Sofa,
+  Box,
+  CheckCircle2,
+  Plus,
+  Minus,
+} from 'lucide-react';
+
+import {
+  addToPickupCart,
+  readPickupCart,
+  updatePickupCartQuantity,
+  removeFromPickupCart,
+  pickupCartEvent,
+  PickupCartItem,
+} from '@/lib/pickupCart';
+
+import { DesktopAppDownloadBanner } from '@/components/AppDownloadLinks';
+import MobileHome from '@/components/MobileHome';
+import CustomerReviews from '@/components/DeferredReviews';
+import CustomerSupportChatWidget from '@/components/SupportChatLauncher';
+import WeightQuantityInput from '@/components/WeightQuantityInput';
+import ScrollReveal from '@/components/ScrollReveal';
+import { getCachedClientJson, invalidateCachedClientJson } from '@/lib/clientRequestCache';
+import { isCustomerWasteCategory, getMaterialImageUrl, subscribeWasteCategoriesChanged } from '@/lib/customerWasteCategories';
+
+const categoryImages: Record<string, string> = {
+  'E-Waste': '/categories/e-waste.webp',
+  'Household Dry Waste': '/categories/household-waste.webp',
+  'Paper & Cardboard': '/categories/paper-carboard.jpg',
+  'Plastic Waste': '/categories/plastic-waste.jpg?v=2',
+};
+
+function resolveCustomerCardImage(category: any): string {
+  const custom = typeof category?.imageUrl === 'string' ? category.imageUrl.trim() : '';
+  if (custom && !custom.startsWith('/categories/')) {
+    return custom;
+  }
+
+  return categoryImages[category?.name] || custom || getMaterialImageUrl(category);
+}
+
+const categoryIcons = [
+  FileText,
+  Package,
+  Recycle,
+  Box,
+  Cpu,
+  Wine,
+  Sofa,
+  Sparkles,
+];
+
+export default function HomePage() {
+  const [categories, setCategories] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState('');
+  const [cartItems, setCartItems] = useState<PickupCartItem[]>([]);
+
+  useEffect(() => {
+    getCachedClientJson<{ success: boolean; data?: any[] }>(
+      'public-customer-waste-categories',
+      '/api/waste-categories?customer=true',
+      15_000,
+      { cache: 'no-store' }
+    )
+      .then((d) =>
+        setCategories(
+          d.success
+            ? (d.data || []).filter(isCustomerWasteCategory)
+            : []
+        )
+      )
+      .catch(() => setCategories([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    const refresh = () => setCartItems(readPickupCart());
+
+    refresh();
+
+    window.addEventListener(pickupCartEvent, refresh);
+
+    return () => window.removeEventListener(pickupCartEvent, refresh);
+  }, []);
+
+  const featured = useMemo(() => categories, [categories]);
+
+  const addCategory = (category: any) => {
+    addToPickupCart(category.id);
+
+    setNotice(
+      `${category.name} added to your Pickup Cart (1 kg)`
+    );
+
+    window.setTimeout(() => setNotice(''), 2200);
+  };
+
+  return (
+    <>
+      <div className="mobile-home-page min-h-screen bg-slate-50/60 pb-20">
+
+      {/* Toast Notification */}
+      {notice && (
+        <div className="fixed bottom-20 left-1/2 z-50 flex -translate-x-1/2 animate-fade-in-up items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white shadow-xl">
+          <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+          <span>{notice}</span>
+        </div>
+      )}
+
+      <MobileHome />
+      {/* Hero Section */}
+      <section
+        className="customer-hero hidden md:block relative overflow-hidden border-b border-slate-800 bg-cover bg-center bg-no-repeat"
+        style={{
+          backgroundImage: "url('/images/junk_it_out.webp')",
+        }}
+      >
+        {/* Dark overlay for readability */}
+        <div className="absolute inset-0 bg-slate-950/60" />
+
+        {/* Green glow */}
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(16,185,129,0.18),rgba(255,255,255,0))]" />
+
+        <div className="relative mx-auto grid jio-site-width items-center gap-12 px-4 py-16 sm:px-6 md:grid-cols-[1.05fr_.95fr] md:py-28">
+
+          <div className="customer-hero-content max-w-2xl">
+
+            <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-400">
+              <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
+              <span>Doorstep Pickup Across Bengaluru</span>
+            </div>
+
+            <h1 className="customer-hero-title max-w-3xl text-4xl font-black leading-[1.02] tracking-[-0.06em] text-white sm:text-6xl lg:text-7xl">
+              Doorstep waste pickup, <br className="hidden sm:inline" />
+              <span className="text-emerald-300 drop-shadow-[0_0_24px_rgba(110,231,183,0.2)]">
+                made simple &amp; fast.
+              </span>
+            </h1>
+
+            <p className="customer-hero-copy mt-4 max-w-xl text-sm leading-relaxed text-slate-300 sm:text-base">
+              Select items, schedule doorstep pickup in Bengaluru, and
+              track your request live from collection to recycling.
+            </p>
+
+            <div className="customer-hero-actions mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
+
+              <Link
+                href="/book?cart=1"
+                className="btn-glossy-primary rounded-full h-12 px-7 text-sm font-extrabold shadow-lg shadow-emerald-500/25"
+              >
+                <ShoppingBasket className="h-4.5 w-4.5" />
+                <span>Book a Pickup</span>
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+
+              <a
+                href="#categories"
+                className="btn-glossy-dark rounded-full h-12 px-7 text-sm font-bold text-slate-200 border border-slate-700/80"
+              >
+                Explore Categories
+              </a>
+
+            </div>
+
+            <div className="customer-hero-trust mt-10 grid grid-cols-1 gap-3 border-t border-white/10 pt-6 text-xs sm:grid-cols-3">
+
+              <div className="customer-glass rounded-2xl p-3 text-slate-300">
+                <Clock3 className="mb-1.5 h-4 w-4 text-emerald-400" />
+
+                <strong className="block font-semibold text-white">
+                  Fast Scheduling
+                </strong>
+
+                <span className="text-[11px] text-slate-400">
+                  ASAP or chosen slots
+                </span>
+              </div>
+
+              <div className="customer-glass rounded-2xl p-3 text-slate-300">
+                <BadgeIndianRupee className="mb-1.5 h-4 w-4 text-emerald-400" />
+
+                <strong className="block font-semibold text-white">
+                  Upfront Rates
+                </strong>
+
+                <span className="text-[11px] text-slate-400">
+                  Clear pricing per kg
+                </span>
+              </div>
+
+              <div className="customer-glass rounded-2xl p-3 text-slate-300">
+                <Recycle className="mb-1.5 h-4 w-4 text-emerald-400" />
+
+                <strong className="block font-semibold text-white">
+                  Responsible
+                </strong>
+
+                <span className="text-[11px] text-slate-400">
+                  Eco-friendly processing
+                </span>
+              </div>
+
+            </div>
+          </div>
+
+          {/* Clean Interactive Process Preview */}
+          <div className="customer-hero-panel relative hidden items-center justify-center md:flex">
+
+            <div className="customer-glass relative w-full max-w-md overflow-hidden rounded-[2rem] p-6 shadow-2xl">
+
+              <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+
+                <div className="flex items-center gap-2">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
+
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                    Simple 3-Step Pickup
+                  </span>
+                </div>
+
+                <Truck className="h-5 w-5 text-emerald-400" />
+
+              </div>
+
+              <div className="mt-5 space-y-3">
+
+                <div className="flex items-center gap-3.5 rounded-xl border border-slate-800/80 bg-slate-900/80 p-3.5 text-xs text-slate-200">
+
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-xs font-bold text-emerald-400">
+                    1
+                  </span>
+
+                  <span className="font-semibold text-slate-200">
+                    Add recyclables to Pickup Cart
+                  </span>
+
+                </div>
+
+                <div className="flex items-center gap-3.5 rounded-xl border border-slate-800/80 bg-slate-900/80 p-3.5 text-xs text-slate-200">
+
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-xs font-bold text-emerald-400">
+                    2
+                  </span>
+
+                  <span className="font-semibold text-slate-200">
+                    Set doorstep location &amp; time
+                  </span>
+
+                </div>
+
+                <div className="flex items-center gap-3.5 rounded-xl border border-emerald-500/30 bg-emerald-950/30 p-3.5 text-xs text-white">
+
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-emerald-500 text-xs font-bold text-slate-950">
+                    3
+                  </span>
+
+                  <span className="font-bold text-emerald-300">
+                    Track assigned agent live
+                  </span>
+
+                </div>
+
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      {/* Main Content */}
+      <main className="customer-home-main mx-auto jio-site-width space-y-10 px-4 py-10 sm:px-6 sm:py-12">
+        <DesktopAppDownloadBanner />
+
+        {/* Waste Categories */}
+        <section id="categories" className="customer-home-section customer-category-section scroll-mt-20">
+
+          {/* Section Header */}
+          <div className="mb-6 flex items-end justify-between gap-4 sm:mb-7">
+
+            <div>
+              <p className="customer-eyebrow">
+                Accepted Materials
+              </p>
+
+              <h2 className="mt-2 text-3xl font-black tracking-[-0.04em] text-slate-950 sm:text-4xl">
+                Add waste items to your cart
+              </h2>
+            </div>
+
+            <Link
+              href="/categories"
+              className="flex shrink-0 items-center gap-1 text-xs font-bold text-emerald-700 hover:text-emerald-800"
+            >
+              <span>View all</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+
+          </div>
+
+          {/* Four Category Cards */}
+          <div className="mobile-material-grid grid grid-cols-1 items-start gap-4 sm:grid-cols-2 lg:grid-cols-4">
+
+            {loading
+              ? Array.from({ length: 4 }).map((_, index) => (
+                  <div
+                    key={index}
+                    className="h-48 w-full animate-pulse rounded-2xl bg-slate-200"
+                  />
+                ))
+              : featured.map((category, index) => {
+
+                  const IconComp =
+                    categoryIcons[index % categoryIcons.length];
+
+                  const cartItem = cartItems.find(
+                    (i) => i.categoryId === category.id
+                  );
+
+                  const quantity = cartItem
+                    ? cartItem.quantity
+                    : 0;
+
+                  return (
+                    <article
+                      key={category.id}
+                      className="customer-feature-card customer-category-card group flex w-full flex-col p-4"
+                    >
+
+                      <Link
+                        href={`/book?category=${encodeURIComponent(category.id)}`}
+                        prefetch={true}
+                        className="flex flex-col touch-manipulation"
+                      >
+
+                        {category.name === 'Household Dry Waste' ? (
+                          <>
+                            <div className="customer-category-image mb-3 h-28 overflow-hidden rounded-2xl bg-emerald-50">
+                              <img
+                                src={resolveCustomerCardImage(category)}
+                                alt="Wet Waste and Dry Waste"
+                                loading="lazy"
+                                decoding="async"
+                                onError={(e) => {
+                                  (e.currentTarget as HTMLImageElement).src = '/categories/household-waste.webp';
+                                }}
+                                className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                              />
+                            </div>
+
+                            <h3 className="text-base font-bold leading-tight text-slate-900">
+                              Household Junk
+                            </h3>
+
+                            <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
+                              {category.description &&
+                              category.description !== 'Clean dry packaging, fabric scraps, wooden pieces, rubber items'
+                                ? category.description
+                                : 'Old furniture, mattresses, appliances, and general household clutter cleared out fast.'}
+                            </p>
+
+                            <div className="mt-2.5 grid grid-cols-2 gap-2">
+                              <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 p-2">
+                                <p className="text-xs font-bold text-emerald-700">
+                                  Wet Waste
+                                </p>
+                                <p className="mt-1 text-[10px] leading-relaxed text-slate-600">
+                                  Food scraps, peels, leftover food, etc.
+                                </p>
+                              </div>
+
+                              <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 p-2">
+                                <p className="text-xs font-bold text-emerald-700">
+                                  Dry Waste
+                                </p>
+                                <p className="mt-1 text-[10px] leading-relaxed text-slate-600">
+                                  Paper, plastic, glass, metal, etc.
+                                </p>
+                              </div>
+                            </div>
+
+                          </>
+                        ) : (
+                          <>
+                            <div className="customer-category-image mb-3 h-28 w-full overflow-hidden rounded-2xl bg-emerald-50">
+                              <img
+                                src={resolveCustomerCardImage(category)}
+                                alt={category.name}
+                                loading="lazy"
+                                decoding="async"
+                                onError={(e) => {
+                                  (e.currentTarget as HTMLImageElement).src = '/categories/household-waste.webp';
+                                }}
+                                className="h-full w-full object-cover transition-transform duration-300 hover:scale-105"
+                              />
+                            </div>
+
+                            <h3 className="text-sm font-bold leading-tight text-slate-900">
+                              {category.name}
+                            </h3>
+
+                            <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
+                              {category.description || 'Standard waste collection category.'}
+                            </p>
+
+                          </>
+                        )}
+
+                      </Link>
+
+                      <div className="mt-3">
+                        <p className="mb-2 text-sm font-extrabold text-emerald-700">
+                          ₹{category.pricePerKg}{' '}
+                          <span className="text-xs font-normal text-slate-500">
+                            / kg
+                          </span>
+                        </p>
+
+                        {quantity === 0 ? (
+
+                          <button
+                            onClick={() => addCategory(category)}
+                            className="btn-glossy-dark rounded-full h-10 w-full text-xs font-bold uppercase tracking-wider shadow-sm touch-manipulation select-none active:scale-95 transition-transform"
+                          >
+                            <Plus className="h-4 w-4" />
+                            ADD
+                          </button>
+
+                        ) : (
+
+                          <div className="flex h-10 items-center justify-between rounded-full border border-emerald-300/80 bg-emerald-50/90 px-1.5 shadow-sm">
+
+                          <button
+                            onClick={() => {
+
+                              if (quantity <= 1) {
+
+                                removeFromPickupCart(category.id);
+
+                              } else {
+
+                                updatePickupCartQuantity(
+                                  category.id,
+                                  quantity - 1
+                                );
+
+                              }
+
+                            }}
+                            className="btn-glossy-secondary rounded-full h-7 w-7 text-slate-700 p-0 grid place-items-center shadow-xs touch-manipulation select-none active:scale-90 transition-transform"
+                            aria-label="Decrease quantity"
+                          >
+                            <Minus className="h-3.5 w-3.5" />
+                          </button>
+
+                          <WeightQuantityInput
+                            value={quantity}
+                            onChange={(val) => updatePickupCartQuantity(category.id, val)}
+                            categoryName={category.name}
+                            textClassName="text-xs font-black text-emerald-950"
+                          />
+
+                          <button
+                            onClick={() =>
+                              updatePickupCartQuantity(
+                                category.id,
+                                quantity + 1
+                              )
+                            }
+                            className="btn-glossy-primary rounded-full h-7 w-7 text-white p-0 grid place-items-center shadow-xs touch-manipulation select-none active:scale-90 transition-transform"
+                            aria-label="Increase quantity"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                          </button>
+
+                          </div>
+
+                        )}
+                      </div>
+
+                    </article>
+                  );
+                })}
+
+          </div>
+        </section>
+
+        {/* Feature Highlights Grid */}
+        <section className="customer-home-section customer-benefits-section">
+        <div className="mb-5 max-w-xl">
+          <p className="customer-eyebrow">Why Junk It Out</p>
+          <h2 className="mt-2 text-2xl font-black tracking-[-0.04em] text-slate-950 sm:text-3xl">A cleaner pickup experience, start to finish.</h2>
+        </div>
+        <ScrollReveal className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4" threshold={0.1}>
+
+          {[
+            {
+              icon: Truck,
+              title: 'Doorstep Pickup',
+              copy: 'Convenient waste collection directly from your home, office, or store.',
+            },
+            {
+              icon: Clock3,
+              title: 'Flexible Scheduling',
+              copy: 'Choose immediate pickup or schedule a slot that fits your day.',
+            },
+            {
+              icon: BadgeIndianRupee,
+              title: 'Transparent Value',
+              copy: 'Clear rates per kg shown upfront with live digital weighing.',
+            },
+            {
+              icon: MapPinned,
+              title: 'Live Tracking',
+              copy: 'Monitor your pickup status and agent progress in real time.',
+            },
+          ].map(({ icon: Icon, title, copy }) => (
+
+            <div
+              key={title}
+              className="customer-benefit-card group rounded-2xl p-5"
+            >
+
+              <span className="mb-3 grid h-10 w-10 place-items-center rounded-xl bg-emerald-50 text-emerald-700">
+                <Icon className="h-5 w-5 transition-transform duration-300 group-hover:-rotate-6 group-hover:scale-110" />
+              </span>
+
+              <h3 className="text-sm font-bold text-slate-900">
+                {title}
+              </h3>
+
+              <p className="mt-1 text-xs leading-relaxed text-slate-600">
+                {copy}
+              </p>
+
+            </div>
+
+          ))}
+
+        </ScrollReveal>
+        </section>
+
+        {/* Customer Reviews Section */}
+        <CustomerReviews />
+
+        {/* Action Banner */}
+        <section className="mobile-tracking-card flex flex-col gap-6 rounded-2xl border border-slate-800 bg-slate-900 p-6 text-white shadow-md sm:p-8 md:flex-row md:items-center md:justify-between">
+
+          <div>
+
+            <div className="mb-2 inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
+              <ShieldCheck className="h-4 w-4" />
+              <span>Track Your Requests</span>
+            </div>
+
+            <h2 className="text-xl font-bold text-white sm:text-2xl">
+              Already scheduled a pickup?
+            </h2>
+
+            <p className="mt-1 max-w-xl text-xs text-slate-300 sm:text-sm">
+              Check live status updates, assigned agent details,
+              receipts, and request history.
+            </p>
+
+          </div>
+
+          <Link
+            href="/customer/orders"
+            className="btn-glossy-primary rounded-full h-12 px-6 text-xs font-extrabold shadow-md tracking-wide"
+          >
+            <span>My Pickups</span>
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+
+        </section>
+
+      </main>
+      </div>
+      <CustomerSupportChatWidget />
+    </>
+  );
+}

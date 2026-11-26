@@ -1,0 +1,98 @@
+import { createHash } from 'crypto';
+import { NextRequest, NextResponse } from 'next/server';
+
+/**
+ * Resolves the client IP address strictly through explicitly trusted proxy configurations.
+ * Prevents IP spoofing via arbitrary client-supplied X-Forwarded-For headers.
+ */
+export function getClientIp(request: NextRequest): string {
+  // 1. Explicitly configured trusted proxy header (e.g. CF-Connecting-IP, True-Client-IP)
+  const configuredHeader = process.env.TRUSTED_PROXY_HEADER?.trim().toLowerCase();
+  if (configuredHeader) {
+    const val = request.headers.get(configuredHeader)?.trim();
+    if (val) {
+      return val.split(',')[0].trim();
+    }
+  }
+
+  // 2. Vercel platform environment: x-vercel-forwarded-for or x-real-ip
+  if (process.env.VERCEL) {
+    const vercelIp = request.headers.get('x-vercel-forwarded-for')?.trim()
+      || request.headers.get('x-real-ip')?.trim();
+    if (vercelIp) {
+      return vercelIp.split(',')[0].trim();
+    }
+  }
+
+  // 3. Explicit TRUST_PROXY setting for authorized reverse proxies
+  if (process.env.TRUST_PROXY === 'true') {
+    const cfIp = request.headers.get('cf-connecting-ip')?.trim();
+    if (cfIp) return cfIp;
+    const realIp = request.headers.get('x-real-ip')?.trim();
+    if (realIp) return realIp;
+    const fwd = request.headers.get('x-forwarded-for')?.trim();
+    if (fwd) {
+      return fwd.split(',')[0].trim();
+    }
+  }
+
+  // 4. Server-provided socket IP from NextRequest (if available)
+  const directIp = (request as any).ip;
+  if (typeof directIp === 'string' && directIp.trim()) {
+    return directIp.trim();
+  }
+
+  // 5. Untrusted proxy/direct client: Do not trust arbitrary X-Forwarded-For headers
+  return 'untrusted-client';
+}
+
+export function opaqueKey(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/** Validates whether an Origin header matches authorized Junk It Out domains. */
+export function isAllowedOrigin(origin: string | null): boolean {
+  if (!origin) return true;
+  const lower = origin.toLowerCase();
+  const allowed = [
+    'https://www.junkitout.in',
+    'https://junkitout.in',
+    'https://testing.junkitout.in',
+    'https://junkitout-testing.info756362.chatgpt.site',
+    'https://admin.junkitout.in',
+    'https://junk-it-out-admin.vercel.app',
+  ];
+  if (process.env.NODE_ENV !== 'production') {
+    allowed.push('http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000', 'http://127.0.0.1:3001');
+  }
+  return allowed.includes(lower);
+}
+
+/** Blocks untrusted browser cross-origin login requests while allowing authorized subdomains & non-browser clients. */
+export function hasTrustedOrigin(request: NextRequest): boolean {
+  const origin = request.headers.get('origin');
+  if (!origin) return true;
+  if (isAllowedOrigin(origin)) return true;
+
+  const host = request.headers.get('host');
+  if (!host) return false;
+
+  try {
+    const originUrl = new URL(origin);
+    if (originUrl.host.toLowerCase() === host.toLowerCase()) return true;
+  } catch {}
+
+  const protocol = request.headers.get('x-forwarded-proto') || (process.env.NODE_ENV === 'production' ? 'https' : 'http');
+  return origin === `${protocol}://${host}`;
+}
+
+export function addCorsHeaders(response: NextResponse, request: NextRequest): NextResponse {
+  const origin = request.headers.get('origin');
+  if (origin && isAllowedOrigin(origin)) {
+    response.headers.set('Access-Control-Allow-Origin', origin);
+    response.headers.set('Access-Control-Allow-Credentials', 'true');
+    response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  }
+  return response;
+}

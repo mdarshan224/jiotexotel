@@ -1,0 +1,14 @@
+import {beforeEach,afterEach,it,expect,vi} from 'vitest';
+import {NextRequest} from 'next/server';
+const m=vi.hoisted(()=>({auth:vi.fn(),start:vi.fn(),rows:vi.fn()}));
+vi.mock('@/lib/auth/middleware',()=>({getAuthUser:m.auth,getAdminAuthorizationStatus:(a:any)=>!a?401:['ADMIN','SUPER_ADMIN'].includes(a.role)?200:403}));
+vi.mock('@/lib/db',()=>({db:{customer:{findMany:m.rows},supportCall:{findMany:m.rows}}}));
+vi.mock('@/lib/voice/supportCalls',async original=>({...await original<typeof import('@/lib/voice/supportCalls')>(),startSupportCall:m.start}));
+import {POST,GET} from '@/app/api/admin/voice/calls/route';
+import {GET as search} from '@/app/api/admin/voice/customers/route';
+const request=(body:any={},origin='https://junkitout.in')=>new NextRequest('https://junkitout.in/api/admin/voice/calls',{method:'POST',headers:{'Content-Type':'application/json',origin},body:JSON.stringify(body)});
+beforeEach(()=>{vi.clearAllMocks();m.auth.mockResolvedValue({role:'ADMIN',userId:'admin'});m.rows.mockResolvedValue([]);m.start.mockResolvedValue({id:'support-call-id',customerId:'customer',callerUserId:'admin',teamPhoneLast4:'0012',status:'queued',createdAt:new Date(),duration:null});});
+afterEach(()=>vi.unstubAllGlobals());
+it('rejects cross-site call requests before processing',async()=>{expect((await POST(request({customerId:'customer',teamPhone:'7000000012',attemptId:'audit-support-attempt-00001'},'https://evil.example'))).status).toBe(403);expect(m.start).not.toHaveBeenCalled();});
+it('requires admin access for customer search and call history',async()=>{m.auth.mockResolvedValue({role:'CUSTOMER'});expect((await search(new NextRequest('https://junkitout.in/api/admin/voice/customers'))).status).toBe(403);expect((await GET(new NextRequest('https://junkitout.in/api/admin/voice/calls'))).status).toBe(403);expect(m.rows).not.toHaveBeenCalled();});
+it('ignores arbitrary target phone and caller identity fields from the browser',async()=>{const r=await POST(request({customerId:'customer',teamPhone:'7000000012',attemptId:'audit-support-attempt-00001',to:'7000000099',callerUserId:'other'}));expect(r.status).toBe(200);expect(m.start).toHaveBeenCalledWith({role:'ADMIN',userId:'admin'},{customerId:'customer',teamPhone:'7000000012',attemptId:'audit-support-attempt-00001'});});
