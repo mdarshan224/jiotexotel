@@ -1,4 +1,6 @@
-"use client";
+'use client';
+import WeightAdjustmentPayment from '@/components/WeightAdjustmentPayment';
+import ScheduledRefundRequest from '@/components/ScheduledRefundRequest';
 import LivePickupTracking from '@/components/LivePickupTracking';
 import {CustomerPickupCode} from '@/components/PickupVerification';
 import AgentPickupDetail from '@/components/AgentPickupDetail';
@@ -1141,7 +1143,9 @@ export default function OrderTrackingPage() {
 
       {/* CANCELLED ALERT BANNER */}
       <CustomerPickupCode orderId={order.id} status={order.status} />
-      {['BOOKING_RECEIVED','AGENT_BEING_ASSIGNED'].includes(order.status)&&!order.agentId&&<section className="rounded-3xl bg-emerald-50 border border-emerald-200 p-5 space-y-2"><h2 className="font-bold text-emerald-950 text-lg">Looking for a pickup agent</h2><p className="text-sm text-emerald-900">Your request is placed. Cancellations are unavailable after booking.</p>{order.assignmentDeadlineAt&&<p className="text-sm text-emerald-900">If no agent is assigned by {new Date(order.assignmentDeadlineAt).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'})} IST, the pickup closes automatically and any captured payment is refunded to its original method.</p>}</section>}
+      <WeightAdjustmentPayment orderId={order.id}/>
+      <ScheduledRefundRequest orderId={order.id} pickupType={order.pickupType}/>
+      {['BOOKING_RECEIVED','AGENT_BEING_ASSIGNED'].includes(order.status)&&!order.agentId&&<section className="rounded-3xl bg-emerald-50 border border-emerald-200 p-5 space-y-2"><h2 className="font-bold text-emerald-950 text-lg">Looking for a pickup agent</h2><p className="text-sm text-emerald-900">Your request is placed. Cancellations are unavailable after booking.</p>{order.assignmentDeadlineAt&&<p className="text-sm text-emerald-900">If no agent is assigned by {new Date(order.assignmentDeadlineAt).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'})} IST, the pickup closes automatically and any eligible captured payment is credited to your Junk It Out wallet.</p>}</section>}
       <a href={`/customer/assistant?orderId=${encodeURIComponent(order.id)}`} className="block rounded-2xl p-4 bg-white border border-emerald-200 text-emerald-800 font-bold">Need help with this pickup? Chat with support →</a>
 
       {order.status === "CANCELLED" && (
@@ -1157,7 +1161,7 @@ export default function OrderTrackingPage() {
           </p>
           {order.paymentStatus === 'REFUND_PENDING' && (
             <p className="text-xs font-bold text-amber-800 mt-2 bg-amber-50 p-2.5 rounded-xl border border-amber-200">
-              Refund initiated: Your payment of ₹{(order.finalAmount || order.estimatedTotal || 0).toFixed(2)} is being processed for return to your original payment method.
+              Refund initiated: Your payment of ₹{(order.finalAmount || order.estimatedTotal || 0).toFixed(2)} is being processed for return to your Junk It Out wallet.
             </p>
           )}
           {order.paymentStatus === 'REFUNDED' && (
@@ -1793,7 +1797,7 @@ export default function OrderTrackingPage() {
               {order.paymentStatus === "CAPTURED" && (
                 <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 text-xs text-amber-900">
                   <span className="font-bold block">Prepaid Order Refund</span>
-                  Your paid amount of ₹{(order.finalAmount || order.estimatedTotal || 0).toFixed(2)} will be automatically queued for a 100% refund to your original payment method.
+                  Your paid amount of ₹{(order.finalAmount || order.estimatedTotal || 0).toFixed(2)} will be automatically queued for a 100% refund to your Junk It Out wallet.
                 </div>
               )}
 

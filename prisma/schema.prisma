@@ -87,6 +87,7 @@ model CustomerWallet {
 }
 
 model WalletTransaction {
+  refundAllocationJson String?
   id               String         @id @default(uuid())
   walletId         String
   customerId       String
@@ -251,6 +252,7 @@ model CustomerSubscription {
 }
 
 model SubscriptionPayment {
+  offerSnapshotJson String @default("{}")
   id                  String                @id @default(uuid())
   customerId          String
   offerId             String
@@ -472,6 +474,7 @@ model Order {
   orderIdempotency   OrderIdempotency?
   agentWalletTransactions AgentWalletTransaction[] @relation("AgentWalletTransactionOrder")
   pickupEarning PickupEarning?
+  weightAdjustment OrderWeightAdjustment?
   subscriptionId     String?
   subscription       CustomerSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
 
@@ -527,6 +530,7 @@ model WeightRecord {
 }
 
 model Payment {
+  purpose String @default("BOOKING")
   id             String   @id @default(uuid())
   orderId        String
   amount         Float
@@ -547,6 +551,7 @@ model Payment {
 }
 
 model RefundRequest {
+  destination String @default("WALLET")
   id                String   @id @default(uuid())
   orderId           String   @unique
   paymentId         String   @unique
@@ -572,6 +577,7 @@ model RefundRequest {
 // These models mirror the pre-existing Supabase tables. orderId and paymentId
 // intentionally remain scalar columns: the supplied SQL defines no FKs for them.
 model RefundAttempt {
+  destination String @default("WALLET")
   id               String               @id
   orderId          String
   paymentId        String
@@ -810,6 +816,12 @@ model PickupEarning {
 }
 
 model AgentKyc {
+  flowVersion Int @default(0)
+  evidenceJson String @default("{}")
+  profileJson String @default("{}")
+  issuesJson String @default("[]")
+  reviewReason String?
+  revision Int @default(0)
   id String @id @default(uuid())
   agentId String @unique
   verificationId String @unique
@@ -857,4 +869,24 @@ model VoiceRoutingConfig {
   supportFallbackUserId String?
   flowUrl String
   updatedAt DateTime @updatedAt
+}
+
+model OrderWeightAdjustment {
+ id String @id @default(uuid())
+ orderId String @unique
+ bookedPaise Int
+ actualPaise Int
+ extraPaise Int @default(0)
+ refundPaise Int @default(0)
+ weightsJson String
+ weightsHash String
+ status String @default("READY")
+ qrId String? @unique
+ qrImageUrl String?
+ qrExpiresAt DateTime?
+ gatewayOrderId String? @unique
+ providerPaymentId String? @unique
+ createdAt DateTime @default(now())
+ updatedAt DateTime @updatedAt
+ order Order @relation(fields:[orderId],references:[id],onDelete:Cascade)
 }

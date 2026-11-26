@@ -33,7 +33,7 @@ export async function POST(
       );
     }
 
-    if (['CUSTOMER','AGENT'].includes(authUser.role)) return NextResponse.json({success:false,message:'Pickups cannot be cancelled after placement. Unassigned pickups are automatically closed after the assignment window, with eligible refunds returned to the original payment method.'},{status:403});
+    if (['CUSTOMER','AGENT'].includes(authUser.role)) return NextResponse.json({success:false,message:'Pickups cannot be cancelled after placement. Unassigned pickups are automatically closed after the assignment window, with eligible refunds credited to the Junk It Out wallet. Scheduled pickups may request a refund more than one hour before their pickup time.'},{status:403});
 
     const { id } = await params;
     const body = await req.json().catch(() => ({}));

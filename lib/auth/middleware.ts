@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { verifyToken, JwtPayload } from './jwt';
 import { db } from '../db';
+import {agentOnboardingApproved} from '@/lib/cashfree/agentOnboarding';
 import { measureTiming } from '../observability/requestTiming';
 
 export async function validatePayload(
@@ -78,7 +79,7 @@ export async function validatePayload(
   return payload;
 }
 
-export async function getAuthUser(req: NextRequest): Promise<JwtPayload | null> {
+async function resolveAuthUser(req: NextRequest): Promise<JwtPayload | null> {
   const recoveryRoute = ['/api/auth/me', '/api/customer/account-deletion'].includes(req.nextUrl?.pathname || '');
   const validate = (payload: JwtPayload) => validatePayload(payload, undefined, undefined, recoveryRoute);
   // Check Authorization Header (Bearer token)
@@ -176,4 +177,12 @@ export function requireAdminUser(user: JwtPayload | null): JwtPayload | null {
 export function getAdminAuthorizationStatus(user: JwtPayload | null): 200 | 401 | 403 {
   if (!user) return 401;
   return isAdminRole(user) ? 200 : 403;
+}
+
+/** Unverified agents may only use authentication and their own KYC journey. */
+export async function getAuthUser(req:NextRequest):Promise<JwtPayload|null>{
+ const auth=await resolveAuthUser(req);if(auth?.role!=='AGENT')return auth;
+ const pathname=req.nextUrl?.pathname||(req.url?new URL(req.url).pathname:'');
+ if(['/api/auth/me','/api/auth/logout'].includes(pathname)||pathname==='/api/agent/onboarding'||pathname.startsWith('/api/agent/kyc/'))return auth;
+ return auth.agentId&&await agentOnboardingApproved(db,auth.agentId)?auth:null;
 }

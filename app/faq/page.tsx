@@ -30,7 +30,7 @@ const FAQ_ITEMS = [
   },
   {
     q: 'Can I cancel or reschedule my pickup?',
-    a: 'Cancellations are not available once a pickup request is placed. If no agent is assigned within 30 minutes of an ASAP booking, or within 30 minutes of the scheduled pickup start, the request closes automatically and any captured payment is refunded to its original method. Contact support if you need help with your request.',
+    a: 'Cancellations are not available once a pickup request is placed. If no agent is assigned within 30 minutes of an ASAP booking, or within 30 minutes of the scheduled pickup start, the request closes automatically and any captured payment is returned to your wallet. For scheduled pickups, you can request a reviewed refund more than one hour before pickup, before service starts. Contact support if you need help with your request.',
   },
   {
     q: 'What service areas does Junk It Out cover in Bengaluru?',

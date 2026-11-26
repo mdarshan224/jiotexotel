@@ -82,7 +82,7 @@ export async function findEligibleAgentsForServiceArea(serviceAreaName?: string,
       select: {
         ...AGENT_PRESENCE_SELECT,
         kycRequired: true,
-        kyc: { select: { reviewStatus: true, providerStatus: true, checksJson: true } },
+        kyc: { select: { reviewStatus: true, providerStatus: true, checksJson: true, flowVersion:true } },
         id: true,
         userId: true,
         vehicleType: true,
@@ -103,10 +103,10 @@ export async function findEligibleAgentsForServiceArea(serviceAreaName?: string,
     });
 
     if (!serviceAreaName) {
-      return availableAgents.filter((a:any) => hasFreshAgentPresence(a) && (!a.kycRequired || (a.kyc?.reviewStatus === 'APPROVED' && verifiedKyc(a.kyc))));
+      return availableAgents.filter((a:any) => hasFreshAgentPresence(a) && verifiedKyc(a.kyc));
     }
 
-    return filterAvailableEligibleAgents(availableAgents.filter((a:any) => hasFreshAgentPresence(a) && (!a.kycRequired || (a.kyc?.reviewStatus === 'APPROVED' && verifiedKyc(a.kyc)))), serviceAreaName);
+    return filterAvailableEligibleAgents(availableAgents.filter((a:any) => hasFreshAgentPresence(a) && verifiedKyc(a.kyc)), serviceAreaName);
   } catch (err) {
     console.error('Failed to query eligible agents for service area:', err);
     return [];

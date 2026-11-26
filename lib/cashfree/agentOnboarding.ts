@@ -35,7 +35,6 @@ export async function startOnboarding(agentId:string,consent:boolean){
 export async function agentOnboardingApproved(client:any,agentId:string){
  const agent=await client.agent.findUnique({where:{id:agentId},select:{kycRequired:true}});
  if(!agent)return false;
- if(!agent.kycRequired)return true;
  const row=await client.agentKyc.findUnique({where:{agentId}});
- return row?.reviewStatus==='APPROVED'&&verifiedKyc(row);
+ return verifiedKyc(row);
 }

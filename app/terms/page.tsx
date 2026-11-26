@@ -99,7 +99,7 @@ export default function TermsPage() {
           </h2>
           <ul className="list-disc pl-5 space-y-2 text-xs text-slate-600 font-medium">
             <li>
-              <strong>Cancellations:</strong> Customer cancellations are unavailable once a pickup request is placed. If no agent is assigned within 30 minutes of booking for ASAP pickups, or within 30 minutes of the scheduled pickup start, the request is closed automatically and a refund of any captured payment is initiated to the original payment method. Refund completion depends on the payment provider and bank.
+              <strong>Cancellations:</strong> Customer cancellations are unavailable once a pickup request is placed. If no agent is assigned within 30 minutes of booking for ASAP pickups, or within 30 minutes of the scheduled pickup start, the request is closed automatically and any captured payment is returned to your Junk It Out wallet. Scheduled pickup refunds may be requested more than one hour before the scheduled time, before service starts. Approved eligible requests return to the original payment account; wallet bookings return to the wallet. Lower actual-weight differences return to your wallet at the booked per-kg rates.
             </li>
             <li>
               <strong>Unavoidable Delays:</strong> Pickup ETAs (20–30 mins) are targets based on traffic conditions in Bengaluru. Unexpected rain, heavy traffic, or road closures may occasionally cause delays.

@@ -1,3 +1,4 @@
+import {finalizeWeightAdjustmentTx,WeightAdjustmentError} from '@/lib/orders/weightAdjustment';
 import {reconcilePickupMilestonesTx} from '@/lib/pickupMilestones';
 import { initializePickupGate, requirePickupVerified } from '@/lib/orders/pickupOtp';
 import { recordPickupEarnings, earningsTax } from '@/lib/agentEarnings';
@@ -89,6 +90,7 @@ export async function transitionOrder<T = unknown>(
 
         if (newStatus === 'PICKUP_COMPLETED' || newStatus === 'SETTLEMENT_COMPLETED') {
           const completed = await tx.order.findUnique({where:{id:orderId}});
+          if(newStatus==='PICKUP_COMPLETED'&&completed?.financialDirection==='CUSTOMER_PAYS'&&['CAPTURED','SUCCESS','PARTIALLY_REFUNDED'].includes(completed.paymentStatus)){const bill=await tx.orderWeightAdjustment.findUnique({where:{orderId}});if(!bill)throw new WeightAdjustmentError('Record and review doorstep weights before completing this pickup.');await finalizeWeightAdjustmentTx(tx,completed);await tx.order.update({where:{id:orderId},data:{finalAmount:bill.actualPaise/100,actualTotal:bill.actualPaise/100}});completed.finalAmount=bill.actualPaise/100;}
           if(completed?.customerId)await reconcilePickupMilestonesTx(tx,completed.customerId);
           if (completed?.agentId) {
             const split = await recordPickupEarnings(tx, {agentId:completed.agentId,orderId:completed.id,orderNumber:completed.orderNumber,amount:completed.finalAmount,gstRate:completed.gstRate});

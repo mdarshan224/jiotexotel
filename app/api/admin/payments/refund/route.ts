@@ -1,3 +1,4 @@
+import {creditPaymentRefundTx} from '@/lib/payments/walletRefunds';
 import { createUniqueMany } from '@/lib/createUniqueMany';
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
@@ -335,8 +336,8 @@ async function handlePost(req: NextRequest, context: ApiRequestContext) {
       });
     }
     if (!payment) return NextResponse.json({ success: false, message: 'Payment record not found.' }, { status: 404 });
-    if (payment.direction !== 'CUSTOMER_PAYS' || payment.gateway !== 'RAZORPAY') {
-      return NextResponse.json({ success: false, message: 'This payment is not refundable through Razorpay.' }, { status: 400 });
+    if (payment.direction !== 'CUSTOMER_PAYS' || !['RAZORPAY','WALLET'].includes(payment.gateway)) {
+      return NextResponse.json({ success: false, message: 'This customer payment cannot be refunded.' }, { status: 400 });
     }
     if (!payment.paymentId || payment.paymentId === 'N/A') {
       return NextResponse.json({ success: false, message: 'No provider payment ID is available for this record.' }, { status: 400 });
@@ -348,6 +349,12 @@ async function handlePost(req: NextRequest, context: ApiRequestContext) {
       orderBy: { createdAt: 'desc' },
     });
     const totals = calculateRefundTotals(Number(payment.amount), existingAttempts);
+    if(typeof body.idempotencyKey==='string'&&body.idempotencyKey.trim()){
+      const prior=existingAttempts.find(a=>a.id===refundAttemptId(payment!.id,body.idempotencyKey.trim()));
+      if(prior){if(body.amount!==undefined&&Math.round(Number(body.amount)*100)!==Math.round(prior.amount*100))return NextResponse.json({success:false,message:'Refund retry amount changed.'},{status:409});return responseForRefund(prior.status,payment.id,prior.razorpayRefundId,{destination:prior.destination});}
+    }
+    if(body.action==='check_status'&&!existingAttempts.some(a=>(IN_FLIGHT_REFUND_STATUSES as readonly string[]).includes(a.status))&&!['REFUND_FAILED',...(IN_FLIGHT_REFUND_STATUSES as readonly string[])].includes(payment.status))return responseForRefund(payment.status,payment.id,undefined);
+
 
     // -----------------------------------------------------------------
     // SAFE RECOVERY: Reset a REFUND_FAILED payment back to CAPTURED/PARTIALLY_REFUNDED,
@@ -556,136 +563,14 @@ async function handlePost(req: NextRequest, context: ApiRequestContext) {
       return responseForRefund(existingSameAttempt.status, payment.id, existingSameAttempt.razorpayRefundId);
     }
 
-    let safeFailureReason: string | undefined;
-    const workflowResult = await executeRefundWorkflow({
-      paymentId: payment.paymentId,
-      amountInPaise: requestedPaise,
-      idempotencyKey,
-    }, {
-      claim: async () => db.$transaction(async (tx) => {
-        const paymentClaim = await tx.payment.updateMany({
-          where: { id: payment!.id, status: { in: ['CAPTURED', 'PARTIALLY_REFUNDED'] } },
-          data: { status: 'REFUND_PROCESSING' },
-        });
-        if (paymentClaim.count !== 1) return false;
-
-        const orderClaim = await tx.order.updateMany({
-          where: { id: payment!.orderId, paymentStatus: { in: ['CAPTURED', 'PARTIALLY_REFUNDED'] } },
-          data: { paymentStatus: 'REFUND_PROCESSING' },
-        });
-        if (orderClaim.count !== 1) throw new Error('Order payment state changed during refund claim.');
-
-        // Re-verify remaining balance inside transaction to block concurrent races
-        const currentAttempts = await tx.refundAttempt.findMany({ where: { paymentId: payment!.id } });
-        const currentTotals = calculateRefundTotals(Number(payment!.amount), currentAttempts);
-        if (requestedPaise > currentTotals.availablePaise) {
-          throw new Error('Concurrent refund attempt exceeded remaining refundable amount.');
-        }
-
-        await tx.refundAttempt.create({
-          data: {
-            id: attemptId,
-            orderId: payment!.orderId,
-            paymentId: payment!.id,
-            amount: requestedPaise / 100,
-            status: 'REFUND_PROCESSING',
-            events: {
-              create: {
-                id: refundEventId(attemptId, 'REFUND_REQUESTED'),
-                eventType: 'REFUND_REQUESTED',
-                status: 'REFUND_PROCESSING',
-                details: {
-                  source: 'ADMIN_API',
-                  providerPaymentId: payment!.paymentId,
-                  idempotencyKey,
-                  amountPaise: requestedPaise,
-                  currency: 'INR',
-                  reason: reason || 'Admin initiated refund',
-                  requestedByUserId: authUser.userId,
-                },
-              },
-            },
-          },
-        });
-        return true;
-      }),
-      submit: () => refundRazorpayPayment(payment!.paymentId!, requestedPaise, {
-        reason: reason || 'Admin initiated refund',
-        adminUserId: authUser.userId,
-        payment_record_id: payment!.id,
-        orderId: payment!.orderId,
-        refund_request_key: idempotencyKey,
-        attempt_id: attemptId,
-      }, idempotencyKey),
-      persist: async (status, refund) => {
-        const outcome = await persistAttemptObservation({
-          attemptId,
-          paymentId: payment!.id,
-          orderId: payment!.orderId,
-          status,
-          eventType: status === 'REFUNDED' ? 'REFUND_PROCESSED' : status === 'REFUND_FAILED' ? 'REFUND_FAILED' : 'REFUND_PENDING',
-          source: 'RAZORPAY_API_RESPONSE',
-          refund,
-          failureReason: status === 'REFUND_FAILED' ? safeFailureReason ?? 'PROVIDER_REJECTED' : undefined,
-        });
-        if (outcome === 'stale' || outcome === 'duplicate') throw new Error('Refund state was finalized by another authoritative event.');
-        if (status === 'REFUNDED' && typeof refund?.payment_id === 'string') {
-          await reverseWalletBonusForRefund(refund.payment_id, requestedPaise / 100, typeof refund.id === 'string' ? refund.id : undefined);
-        }
-      },
-      markUncertain: async (reasonCode) => {
-        await persistAttemptObservation({
-          attemptId,
-          paymentId: payment!.id,
-          orderId: payment!.orderId,
-          status: 'REFUND_PENDING_RECONCILIATION',
-          eventType: 'REFUND_OUTCOME_UNCERTAIN',
-          source: 'RAZORPAY_API_RESPONSE',
-          failureReason: reasonCode,
-        });
-      },
-      isDefinitiveRejection: (error) => {
-        const rejected = error instanceof RazorpayApiError && error.statusCode >= 400 && error.statusCode < 500 && error.statusCode !== 409;
-        if (rejected) safeFailureReason = `PROVIDER_REJECTED_HTTP_${error.statusCode}`;
-        return rejected;
-      },
+    const walletCredit=await db.$transaction(async tx=>{
+      const credited=await creditPaymentRefundTx(tx,{paymentId:payment!.id,amountPaise:requestedPaise,identity:'admin',attemptId,reason:reason||'Pickup payment refund'});
+      await tx.auditLog.create({data:{userId:authUser.userId,action:'PAYMENT_WALLET_REFUND',newValue:JSON.stringify({paymentId:payment!.id,amountPaise:requestedPaise,attemptId})}});
+      return credited;
     });
+    return NextResponse.json({success:true,message:'Refund credited to the customer wallet.',data:{paymentId:payment.id,status:requestedPaise===totals.remainingPaise?'REFUNDED':'PARTIALLY_REFUNDED',destination:'WALLET',transactionId:walletCredit.id}});
 
-    if (workflowResult.kind === 'processed') {
-      const remainingAfterRefund = Math.max(0, totals.remainingPaise - requestedPaise) / 100;
-      const targetStatus = remainingAfterRefund === 0 ? 'REFUNDED' : 'PARTIALLY_REFUNDED';
 
-      await db.auditLog.create({
-        data: {
-          userId: authUser?.userId || null,
-          userName: authUser?.name || 'Admin Operations',
-          action: 'PAYMENT_REFUND',
-          oldValue: `Payment ${payment.id} status: ${payment.status}, amount: ₹${payment.amount}`,
-          newValue: `Refunded ₹${requestedPaise / 100} (${targetStatus}) via Razorpay ID: ${workflowResult.refund.id}. Reason: ${reason || 'Admin initiated'}`,
-        },
-      }).catch(() => null);
-
-      return responseForRefund(targetStatus, payment.id, String(workflowResult.refund.id), {
-        amountRefunded: requestedPaise / 100,
-        remainingRefundableAmount: remainingAfterRefund,
-      });
-    }
-    if (workflowResult.kind === 'pending') {
-      return responseForRefund('REFUND_PENDING_RECONCILIATION', payment.id, workflowResult.refund?.id as string | undefined);
-    }
-    if (workflowResult.kind === 'failed') {
-      return responseForRefund('REFUND_FAILED', payment.id, workflowResult.refund?.id as string | undefined);
-    }
-    if (workflowResult.kind === 'rejected') {
-      return NextResponse.json({ success: false, message: 'Razorpay rejected the refund request.' }, { status: 422 });
-    }
-    if (workflowResult.kind === 'persistence-failed') {
-      return NextResponse.json({ success: false, message: 'Refund outcome is being reconciled. Do not submit another refund.' }, { status: 503 });
-    }
-    if (workflowResult.kind === 'claimed-elsewhere') {
-      return NextResponse.json({ success: false, message: 'A concurrent refund request was already claimed for this payment.' }, { status: 409 });
-    }
-    return responseForRefund('REFUND_PENDING_RECONCILIATION', payment.id);
   } catch (error) {
     logStructured('error', 'payment.refund.failed', {
       ...context,

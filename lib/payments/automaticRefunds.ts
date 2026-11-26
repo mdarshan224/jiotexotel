@@ -1,3 +1,4 @@
+import {creditPaymentRefundTx} from './walletRefunds';
 import {randomUUID} from 'node:crypto';
 import {db} from '@/lib/db';
 import {expireAssignmentTx} from '@/lib/orders/assignmentDeadline';
@@ -12,17 +13,8 @@ export async function queueCancelledPaymentRefundTx(tx:any,payment:any){
  const id=refundAttemptId(payment.id);
  const existing=await tx.refundAttempt.findMany({where:{paymentId:payment.id}});
  if(existing.length)return; // An existing admin/provider attempt owns this payment, including uncertain outcomes.
- if(payment.gateway==='WALLET'&&payment.paymentId===`wallet:${order.id}`){
-  await refundWalletOrderPayment(tx,{customerId:order.customerId,orderId:order.id,amount:payment.amount});
-  await tx.refundAttempt.create({data:{id,orderId:order.id,paymentId:payment.id,amount:payment.amount,status:'REFUNDED'}});
-  await tx.payment.update({where:{id:payment.id},data:{status:'REFUNDED'}});
-  await tx.order.update({where:{id:order.id},data:{paymentStatus:'REFUNDED'}});return;
- }
- if(payment.gateway!=='RAZORPAY'||!payment.paymentId.startsWith('pay_'))throw new Error('Unsupported payment gateway for automatic refund.');
- await tx.refundAttempt.create({data:{id,orderId:order.id,paymentId:payment.id,amount:payment.amount,status:'QUEUED'}});
- await tx.payment.update({where:{id:payment.id},data:{status:'REFUND_PROCESSING'}});
- await tx.order.update({where:{id:order.id},data:{paymentStatus:'REFUND_PROCESSING'}});
- await tx.refundAttemptEvent.create({data:{id:`${id}_queued`,refundAttemptId:id,eventType:'AUTOMATIC_REFUND_QUEUED',status:'QUEUED',details:{reason:order.assignmentTimedOutAt?'ASSIGNMENT_TIMEOUT':'LATE_CAPTURE_AFTER_CANCELLATION'}}});
+ await creditPaymentRefundTx(tx,{paymentId:payment.id,amountPaise:Math.round(payment.amount*100),identity:'automatic',attemptId:id,reason:'Refund for an unfulfilled pickup'});
+
 }
 export async function protectCapturedOrderTx(tx:any,orderId:string){
  await expireAssignmentTx(tx,orderId);
@@ -52,6 +44,7 @@ export async function processAutomaticRefund(id:string){
  const attempt=await db.refundAttempt.findUnique({where:{id}});if(!attempt)return 'MISSING';
  if(['REFUNDED','REFUND_FAILED'].includes(attempt.status))return attempt.status;
  const payment=await db.payment.findUniqueOrThrow({where:{id:attempt.paymentId}});
+ if(attempt.destination==='WALLET'&&attempt.status==='QUEUED'){await db.$transaction(tx=>creditPaymentRefundTx(tx,{paymentId:payment.id,amountPaise:Math.round(attempt.amount*100),identity:'automatic',attemptId:attempt.id,reason:'Refund for an unfulfilled pickup'}));return 'REFUNDED';}
  if(!payment.paymentId)throw new Error('Captured payment reference is missing.');
  const expected={paymentId:payment.paymentId,amountInPaise:Math.round(attempt.amount*100),idempotencyKey:refundIdempotencyKey(payment.id)};
  const claimed=await db.refundAttempt.updateMany({where:{id,status:'QUEUED'},data:{status:'REFUND_PROCESSING'}});

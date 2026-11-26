@@ -1,0 +1,5 @@
+import {NextRequest,NextResponse} from 'next/server';
+import {getAuthUser,isAdminRole} from '@/lib/auth/middleware';
+import {secureIdConfig} from '@/lib/cashfree/secureId';
+export const PAYMENT_WEBHOOK_EVENTS=['payment.authorized','payment.captured','payment.failed','order.paid','refund.created','refund.processed','refund.failed','qr_code.credited'];
+export async function GET(req:NextRequest){if(!isAdminRole(await getAuthUser(req)))return NextResponse.json({success:false},{status:403});const key=process.env.RAZORPAY_KEY_ID?.trim(),cashfree=secureIdConfig();return NextResponse.json({success:true,data:{webhookUrl:'https://junkitout.in/api/payments/webhook',events:PAYMENT_WEBHOOK_EVENTS,razorpay:{keyConfigured:!!key,secretConfigured:!!process.env.RAZORPAY_KEY_SECRET?.trim(),webhookSecretConfigured:!!process.env.RAZORPAY_WEBHOOK_SECRET?.trim(),mode:key?.startsWith('rzp_live_')?'live':'test'},cashfree:{ready:cashfree.ready,mode:cashfree.mode},subscriptionMode:'Prepaid purchase and renewal',refundDestination:'Wallet; eligible scheduled requests reviewed separately'}},{headers:{'Cache-Control':'private, no-store',Vary:'Cookie, Authorization'}});}

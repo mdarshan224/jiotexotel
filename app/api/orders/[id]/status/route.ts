@@ -1,3 +1,4 @@
+import {WeightAdjustmentError} from '@/lib/orders/weightAdjustment';
 import { PickupOtpError } from '@/lib/orders/pickupOtp';
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
@@ -110,7 +111,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       data: updatedOrder,
     });
   } catch (error: any) {
-    if (error instanceof PickupOtpError) return NextResponse.json({success:false,message:error.message},{status:error.status});
+    if (error instanceof PickupOtpError||error instanceof WeightAdjustmentError) return NextResponse.json({success:false,message:error.message},{status:error.status});
     return NextResponse.json({ success: false, message: error.message }, { status: 500 });
   }
 }

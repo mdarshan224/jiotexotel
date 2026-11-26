@@ -1,9 +1,13 @@
+import {releaseRefundedPickupAgentTx} from '@/lib/payments/refundPolicy';
+import {processCatalogWebhook} from '@/lib/payments/catalogWebhook';
+import {processWeightWebhook} from '@/lib/orders/weightAdjustment';
 import {protectCapturedOrderTx,processAutomaticRefund} from '@/lib/payments/automaticRefunds';
 import { createUniqueMany } from '@/lib/createUniqueMany';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import {
   refundRazorpayPayment,
+  fetchRazorpayPayment,captureRazorpayPayment,
   verifyRazorpayWebhookSignature,
 } from '@/lib/payments/razorpay';
 import { dispatchPaidOrderToAgents } from '@/lib/payments/verification';
@@ -33,6 +37,9 @@ async function handlePost(req: NextRequest, context: ApiRequestContext) {
     }
 
     const body = JSON.parse(rawBody);
+    if(!['payment.authorized','payment.captured','payment.failed','order.paid','refund.created','refund.processed','refund.failed','qr_code.credited'].includes(body.event))return NextResponse.json({success:true,status:'Event ignored.'});
+    if(await processWeightWebhook(body))return NextResponse.json({success:true,status:'Weight payment reconciled.'});
+    if(await processCatalogWebhook(body.event,body.payload?.payment?.entity))return NextResponse.json({success:true,status:'Purchase payment reconciled.'});
 
     const refundEntity = body.payload?.refund?.entity;
     if (refundEntity?.id && refundEntity.payment_id) {
@@ -56,7 +63,7 @@ async function handlePost(req: NextRequest, context: ApiRequestContext) {
           if (refundRequest.status === 'REFUNDED') {
             return NextResponse.json({ success: true, status: 'Refund already reconciled.' });
           }
-          if (!['REFUND_PROCESSING', 'REFUND_STATUS_UNKNOWN'].includes(refundRequest.status)) {
+          if (!['REFUND_PROCESSING', 'REFUND_STATUS_UNKNOWN','REFUND_FAILED'].includes(refundRequest.status)) {
             return NextResponse.json({ success: false, message: 'Refund request was not approved for processing.' }, { status: 409 });
           }
 
@@ -73,26 +80,16 @@ async function handlePost(req: NextRequest, context: ApiRequestContext) {
             return NextResponse.json({ success: false, message: 'Refund webhook does not match the local refund request.' }, { status: 409 });
           }
 
-          await db.$transaction([
-            (db as any).refundRequest.update({
-              where: { id: refundRequest.id },
-              data: {
-                status: refundProcessed ? 'REFUNDED' : 'REFUND_FAILED',
-                razorpayRefundId: refundEntity.id,
-                failureReason: refundFailed ? String(refundEntity.error_description || 'Razorpay reported refund failure.') : null,
-              },
-            }),
-            db.payment.update({
-              where: { id: refundRequest.paymentId },
-              data: { status: refundProcessed ? 'REFUNDED' : refundRequest.payment.status },
-            }),
-            ...(refundProcessed
-              ? [db.order.update({
-                  where: { id: refundRequest.orderId },
-                  data: { paymentStatus: 'REFUNDED' },
-                })]
-              : []),
-          ]);
+          if(refundEntity.status!==(refundProcessed?'processed':'failed'))return NextResponse.json({success:false,message:'Refund event status mismatch.'},{status:400});
+          await db.$transaction(async tx=>{
+            const current=await tx.refundRequest.findUnique({where:{id:refundRequest.id}});
+            if(!current||current.status==='REFUNDED')return;
+            if(!['REFUND_PROCESSING','REFUND_STATUS_UNKNOWN','REFUND_FAILED'].includes(current.status))throw new Error('Refund review state changed.');
+            await tx.refundRequest.update({where:{id:current.id},data:{status:refundProcessed?'REFUNDED':'REFUND_FAILED',razorpayRefundId:refundEntity.id,failureReason:refundFailed?'Provider reported refund failure.':null}});
+            await tx.payment.update({where:{id:current.paymentId},data:{status:refundProcessed?'REFUNDED':'REFUND_FAILED'}});
+            await tx.order.update({where:{id:current.orderId},data:{paymentStatus:refundProcessed?'REFUNDED':'REFUND_FAILED',...(refundProcessed&&current.destination==='SOURCE'?{status:'CANCELLED',cancellationReason:'Scheduled refund approved.'}:{})}});
+            if(refundProcessed&&current.destination==='SOURCE')await releaseRefundedPickupAgentTx(tx,current.orderId);
+          });
           if (refundFailed) {
             logStructured('warn', 'payment.provider.refund_failed', {
               ...context,
@@ -299,7 +296,7 @@ async function handlePost(req: NextRequest, context: ApiRequestContext) {
 
     const payment = await db.payment.findFirst({ where: { gatewayOrderId, direction: 'CUSTOMER_PAYS' } });
     if (!payment) {
-      return NextResponse.json({ success: false, message: 'Payment order is not recognized.' }, { status: 404 });
+      return NextResponse.json({ success: true, status: 'Unrecognised payment order ignored.' });
     }
 
     if (entity.currency !== 'INR' || Number(entity.amount) !== Math.round(payment.amount * 100)) {
@@ -314,8 +311,11 @@ async function handlePost(req: NextRequest, context: ApiRequestContext) {
     }
 
     const failed = body.event === 'payment.failed';
-    const authorized = body.event === 'payment.authorized';
-    const captured = body.event === 'payment.captured';
+    let authorized = body.event === 'payment.authorized';
+    let captured = body.event === 'payment.captured'||body.event==='order.paid';
+    if((failed&&entity.status!=='failed')||(captured&&entity.status!=='captured'))return NextResponse.json({success:false,message:'Payment event status mismatch.'},{status:400});
+    if(authorized&&payment.status!=='CAPTURED'){let proof=await fetchRazorpayPayment(providerPaymentId);if(proof.order_id!==gatewayOrderId||proof.amount!==Math.round(payment.amount*100)||proof.currency!=='INR')throw new Error('Authorized payment proof mismatch.');if(proof.status==='authorized')proof=await captureRazorpayPayment(proof.id,proof.amount);if(proof.status!=='captured')throw new Error('Payment capture awaiting confirmation.');authorized=false;captured=true;}
+    if(failed&&['AUTHORIZED','PARTIALLY_REFUNDED'].includes(payment.status))return NextResponse.json({success:true,status:'Older failed attempt ignored.'});
     if (!failed && !authorized && !captured) {
       return NextResponse.json({ success: true, status: 'Event ignored' });
     }
@@ -339,7 +339,7 @@ async function handlePost(req: NextRequest, context: ApiRequestContext) {
       const paymentClaim = await tx.payment.updateMany({
         where: {
           id: payment.id,
-          status: { in: ['PENDING', 'INITIATED', 'AUTHORIZED'] },
+          status: { in: ['PENDING', 'INITIATED', 'AUTHORIZED', 'FAILED'] },
         },
         data: {
           paymentId: providerPaymentId,

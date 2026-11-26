@@ -1,4 +1,5 @@
 'use client';
+import WeightAdjustmentPayment from '@/components/WeightAdjustmentPayment';
 import {ONLINE_AGENT_STATUSES} from '@/lib/agents/locationPolicy';
 import {agentPickupGroup, agentLedgerTotals, agentWeightRows} from '@/lib/agentPortal';
 import {AgentPickupOtp} from '@/components/PickupVerification';
@@ -86,6 +87,8 @@ export default function AgentDashboardPage() {
     weightStr: string;
   }[]>([]);
   const [weighNotes, setWeighNotes] = useState('');
+  const [weightBill,setWeightBill]=useState<any>(null);
+  useEffect(()=>{setWeightBill(null);},[activeOrder?.id]);
   const [submittingWeigh, setSubmittingWeigh] = useState(false);
   const [weighModalError, setWeighModalError] = useState<string | null>(null);
 
@@ -984,8 +987,8 @@ export default function AgentDashboardPage() {
       const trimmed = item.weightStr.trim();
       const numVal = Number(trimmed);
 
-      if (!trimmed || isNaN(numVal) || !Number.isFinite(numVal) || numVal <= 0) {
-        setWeighModalError(`Please enter a valid weight (greater than 0 kg) for "${item.categoryName}".`);
+      if (!trimmed || isNaN(numVal) || !Number.isFinite(numVal) || numVal < 0) {
+        setWeighModalError(`Please enter a valid weight (zero or more kg) for "${item.categoryName}".`);
         return;
       }
 
@@ -1011,6 +1014,13 @@ export default function AgentDashboardPage() {
     try {
       const controller = new AbortController();
       weighTimeout = window.setTimeout(() => controller.abort(), 15_000);
+      if(activeOrder.financialDirection==='CUSTOMER_PAYS'&&['CAPTURED','SUCCESS','PARTIALLY_REFUNDED'].includes(activeOrder.paymentStatus)){
+        if(!weightBill){
+          const quote=await fetch(`/api/orders/${activeOrder.id}/weight-adjustment`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'quote',actualWeights:payloadActualWeights}),signal:controller.signal});
+          const quoted=await quote.json();if(!quote.ok||!quoted.success)throw new Error(quoted.message||'Could not prepare the doorstep bill.');setWeightBill(quoted.data);setStatusNotice('Review the weight bill below before completing pickup.');return;
+        }
+        if(weightBill.extraAmount>0&&!weightBill.paid){setWeighModalError('Confirm the extra weight payment below before completing pickup.');return;}
+      }
       // Submit door-to-door scale weights and complete pickup in a single atomic request
       const completeRes = await fetch(`/api/orders/${activeOrder.id}/complete`, {
         method: 'POST',
@@ -1060,7 +1070,7 @@ export default function AgentDashboardPage() {
       const errorText =
         e instanceof DOMException && e.name === 'AbortError'
           ? 'Completion timed out. Please check your network and active orders.'
-          : 'Network error while completing pickup. Please check your connection and try again.';
+          : e instanceof Error?e.message:'Unable to complete pickup. Check the latest pickup status.';
       setWeighModalError(errorText);
       setStatusNotice(errorText);
       setTimeout(() => setStatusNotice(null), 5000);
@@ -1690,6 +1700,7 @@ export default function AgentDashboardPage() {
                           const copy = [...actualWeightsInput];
                           copy[idx].weightStr = raw;
                           setActualWeightsInput(copy);
+                          setWeightBill(null);
                           if (weighModalError) setWeighModalError(null);
                         }
                       }}
@@ -1718,6 +1729,7 @@ export default function AgentDashboardPage() {
               />
             </div>
 
+            {weightBill&&activeOrder&&<WeightAdjustmentPayment orderId={activeOrder.id} role="AGENT" initial={weightBill} onChanged={setWeightBill}/>}
             <button
               type="button"
               onClick={handleSubmitWeighingAndComplete}
@@ -1732,7 +1744,7 @@ export default function AgentDashboardPage() {
               ) : (
                 <>
                   <CheckCircle className="w-5 h-5 shrink-0" />
-                  <span>CONFIRM WEIGHTS & COMPLETE PICKUP</span>
+                  <span>{weightBill?'COMPLETE PICKUP':'REVIEW WEIGHTS & BILL'}</span>
                 </>
               )}
             </button>

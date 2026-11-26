@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getAuthUser } from '@/lib/auth/middleware';
-import { fetchRazorpayPayment, verifyRazorpayPaymentSignature } from '@/lib/payments/razorpay';
-import { calculateSubscriptionExpiry } from '@/lib/subscriptions';
+import { fetchRazorpayPayment, captureRazorpayPayment, verifyRazorpayPaymentSignature } from '@/lib/payments/razorpay';
+import {fulfillSubscriptionPurchase} from '@/lib/payments/catalog';
 import { dispatchSubscriptionNotification } from '@/lib/services/walletNotification';
 
 export const runtime = 'nodejs';
@@ -30,69 +30,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, alreadyProcessed: true, data: existing });
     }
     if (!verifyRazorpayPaymentSignature(razorpayOrderId, razorpayPaymentId, razorpaySignature)) {
-      await db.subscriptionPayment.update({ where: { id: paymentRecord.id }, data: { status: 'FAILED', failureReason: 'Invalid payment signature.' } });
       return NextResponse.json({ success: false, message: 'Payment signature verification failed.' }, { status: 400 });
     }
-    const gatewayPayment = await fetchRazorpayPayment(razorpayPaymentId);
+    let gatewayPayment = await fetchRazorpayPayment(razorpayPaymentId);
+    if(gatewayPayment.status==='authorized'&&gatewayPayment.order_id===paymentRecord.gatewayOrderId&&gatewayPayment.currency==='INR'&&gatewayPayment.amount===Math.round(paymentRecord.amount*100))gatewayPayment=await captureRazorpayPayment(gatewayPayment.id,gatewayPayment.amount);
     if (
       gatewayPayment.order_id !== paymentRecord.gatewayOrderId ||
       gatewayPayment.amount !== Math.round(paymentRecord.amount * 100) ||
       gatewayPayment.currency !== 'INR' ||
       gatewayPayment.status !== 'captured'
     ) {
-      await db.subscriptionPayment.update({ where: { id: paymentRecord.id }, data: { status: 'FAILED', failureReason: 'Payment was not captured for the expected amount.' } });
       return NextResponse.json({ success: false, message: 'Payment was not captured for the expected amount.' }, { status: 400 });
     }
 
-    const subscription = await db.$transaction(async (tx) => {
-      const duplicate = await tx.subscriptionPayment.findUnique({ where: { gatewayPaymentId: razorpayPaymentId } });
-      if (duplicate && duplicate.id !== paymentRecord.id) throw new Error('This payment has already been processed.');
-      await tx.$queryRaw`SELECT "id" FROM "SubscriptionPayment" WHERE "id" = ${paymentRecord.id}`;
-      const current = await tx.subscriptionPayment.findUnique({ where: { id: paymentRecord.id }, include: { offer: true } });
-      if (!current) throw new Error('Subscription payment was not found.');
-      if (current.status === 'SUCCESS') return tx.customerSubscription.findUnique({ where: { paymentId: current.id } });
-      const latest = await tx.customerSubscription.findFirst({
-        where: { customerId: authUser.customerId!, status: 'ACTIVE', expiryDate: { gt: new Date() } },
-        orderBy: { expiryDate: 'desc' },
-      });
-      const startDate = latest ? latest.expiryDate : new Date();
-      const expiryDate = calculateSubscriptionExpiry(startDate, current.offer);
-      await tx.subscriptionPayment.update({
-        where: { id: current.id },
-        data: {
-          status: 'SUCCESS',
-          paymentMethod: 'RAZORPAY',
-          gatewayPaymentId: razorpayPaymentId,
-          signature: razorpaySignature,
-          failureReason: null,
-        },
-      });
-      const createdSub = await tx.customerSubscription.create({
-        data: {
-          customerId: authUser.customerId!,
-          offerId: current.offerId,
-          paymentId: current.id,
-          startDate,
-          expiryDate,
-          status: 'ACTIVE',
-          pickupsAllowed: current.offer.pickupLimit ?? 4,
-          pickupsUsed: 0,
-          autoRenew: false,
-        },
-        include: { offer: true },
-      });
-
-      await dispatchSubscriptionNotification(tx, {
-        customerId: authUser.customerId!,
-        type: 'SUBSCRIPTION_PURCHASE',
-        planName: current.offer.name,
-        price: current.amount,
-        expiryDate,
-        pickupsAllowed: current.offer.pickupLimit ?? 4,
-      });
-
-      return createdSub;
-    });
+    const subscription=await fulfillSubscriptionPurchase(paymentRecord.id,gatewayPayment,razorpaySignature);
     return NextResponse.json({ success: true, data: subscription });
   } catch (error) {
     console.error('Subscription payment verification failed:', error);

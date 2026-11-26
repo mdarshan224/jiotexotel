@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
     if (!offer) return NextResponse.json({ success: false, message: 'Subscription offer is unavailable.' }, { status: 404 });
 
     const payment = await db.subscriptionPayment.create({
-      data: { customerId: authUser.customerId, offerId: offer.id, amount: offer.price },
+      data: { customerId: authUser.customerId, offerId: offer.id, amount: offer.price, offerSnapshotJson: JSON.stringify(offer), },
     });
     try {
       const razorpayOrder = await createRazorpayOrder({

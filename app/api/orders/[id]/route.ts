@@ -40,6 +40,7 @@ export async function GET(
       ? await db.order.findFirst({
           where: orderWhere,
           select: {
+            weightAdjustment:true,
             pickupGate: { select: { verifiedAt: true, verifiedAgentId: true } },
             id: true,
             orderNumber: true,
@@ -103,6 +104,8 @@ export async function GET(
             items: { include: { category: true } },
             statusHistory: { orderBy: { timestamp: 'desc' } },
             payments: true,
+            weightAdjustment:true,
+            refundRequest:true,
             invoices: true,
             weightRecords: { orderBy: { createdAt: 'desc' }, take: 1 },
             settlement: {

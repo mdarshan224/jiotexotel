@@ -735,12 +735,12 @@ export default function MyPickupsPage() {
                     )}
                     {o.paymentStatus === 'REFUND_PENDING' && (
                       <p className="text-[11px] font-semibold text-amber-800">
-                        Refund Status: 100% refund is queued for admin review to your original payment method.
+                        Refund review is in progress. See the pickup tracker for details.
                       </p>
                     )}
                     {o.paymentStatus === 'REFUNDED' && (
                       <p className="text-[11px] font-semibold text-emerald-800">
-                        Refund Status: 100% refunded to your original payment method.
+                        Refund processed. See the pickup tracker and wallet history for details.
                       </p>
                     )}
                   </div>
@@ -854,7 +854,7 @@ export default function MyPickupsPage() {
               {cancellingOrder.paymentStatus === 'CAPTURED' && (
                 <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 text-xs text-amber-900">
                   <span className="font-bold block">Prepaid Order Refund</span>
-                  Your paid amount of ₹{(cancellingOrder.finalAmount || cancellingOrder.estimatedTotal || 0).toFixed(2)} will be automatically queued for a 100% refund to your original payment method.
+                  Your paid amount of ₹{(cancellingOrder.finalAmount || cancellingOrder.estimatedTotal || 0).toFixed(2)} will be automatically queued for a 100% refund to your Junk It Out wallet.
                 </div>
               )}
 

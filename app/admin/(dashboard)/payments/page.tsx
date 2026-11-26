@@ -20,6 +20,7 @@ export default function AdminPaymentsPage() {
   const [refundReason, setRefundReason] = useState('Customer request / order adjustment');
   const requestId = useRef(0);
   const refundInFlightRef = useRef(false);
+  const refundAttemptKey=useRef('');
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -101,6 +102,7 @@ export default function AdminPaymentsPage() {
           paymentRecordId: refundModalPayment.id,
           amount: numAmount,
           reason: refundReason,
+          idempotencyKey:refundAttemptKey.current,
         }),
       });
       const data = await res.json().catch(() => null);
@@ -123,7 +125,7 @@ export default function AdminPaymentsPage() {
       const res = await fetch('/api/admin/payments/refund', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paymentRecordId: payment.id }),
+        body: JSON.stringify({ paymentRecordId: payment.id,action:'check_status' }),
       });
       const data = await res.json();
       if (data.data?.canResetToCaptured) {
@@ -278,11 +280,12 @@ export default function AdminPaymentsPage() {
                         <button
                           onClick={() => {
                             setRefundModalPayment(p);
+                            refundAttemptKey.current=crypto.randomUUID();
                             setRefundAmount(String(p.remainingRefundableAmount ?? p.amount ?? ''));
                             setRefundReason('Customer request / order adjustment');
                           }}
                           className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-bold text-[11px] rounded-xl flex items-center gap-1 ml-auto transition-colors"
-                          title="Initiate server-side Razorpay refund"
+                          title="Credit refund to customer wallet"
                         >
                           <RotateCcw className="w-3 h-3" />
                           {p.status === 'PARTIALLY_REFUNDED' ? 'Refund More' : 'Refund'}
@@ -405,7 +408,7 @@ export default function AdminPaymentsPage() {
             <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 text-xs text-rose-900 space-y-1">
               <p className="font-bold">⚠️ Warning: Irreversible Payout Action</p>
               <p className="text-[11px] text-rose-800">
-                This will trigger Razorpay REST API to refund ₹{Number(refundAmount) || 0} back to the customer&apos;s source account. Status will be tracked atomically in PostgreSQL.
+                ₹{Number(refundAmount) || 0} will be credited to the customer’s Junk It Out wallet. The refund is recorded once in the payment and wallet history.
               </p>
             </div>
 

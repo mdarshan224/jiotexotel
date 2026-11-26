@@ -20,6 +20,6 @@ export async function expireAssignmentTx(tx:any,id:string,now=new Date()){
  const claim=await tx.order.updateMany({where:{id,agentId:null,status:{in:OPEN_ASSIGNMENT_STATUSES},timeoutPolicyVersion:1,assignmentDeadlineAt:{lte:now}},data:{status:'CANCELLED',assignmentTimedOutAt:now}});
  if(claim.count!==1)return false;
  if(order.subscriptionId)await tx.customerSubscription.updateMany({where:{id:order.subscriptionId,pickupsUsed:{gt:0}},data:{pickupsUsed:{decrement:1}}});
- await tx.orderStatusHistory.create({data:{orderId:id,oldStatus:order.status,newStatus:'CANCELLED',notes:'No pickup agent assigned within 30 minutes. Automatic refund to original payment method requested.'}});
+ await tx.orderStatusHistory.create({data:{orderId:id,oldStatus:order.status,newStatus:'CANCELLED',notes:'No pickup agent assigned within 30 minutes. Automatic wallet refund requested.'}});
  return true;
 }

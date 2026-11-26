@@ -62,7 +62,7 @@ export async function POST(
       data: {
         customerId: authUser.customerId,
         offerId: sub.offerId,
-        amount: sub.offer.price,
+        amount: sub.offer.price, offerSnapshotJson: JSON.stringify(sub.offer),
         paymentMethod: 'RAZORPAY',
         status: 'PENDING',
       },

@@ -1,3 +1,4 @@
+import {publicWeightAdjustment} from './weightAdjustment';
 /** Agent responses use a closed projection. Customer contact fields never cross this boundary. */
 export function redactContactText(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -6,7 +7,9 @@ export function redactContactText(value: unknown): string | null {
 export function agentOrder(order: any) {
   if (!order) return order;
   const address = order.address;
+  let pendingWeights:any[]=[];try{pendingWeights=JSON.parse(order.weightAdjustment?.weightsJson||'[]');}catch{}
   return {
+    weightAdjustment:publicWeightAdjustment(order.weightAdjustment),
     viewerRole: 'AGENT',
     pickupStartVerified: Boolean(order.pickupGate?.verifiedAt && order.pickupGate?.verifiedAgentId === order.agentId),
     id: order.id, orderId: order.id, orderNumber: order.orderNumber,
@@ -25,7 +28,7 @@ export function agentOrder(order: any) {
     } : null,
     items: (order.items || []).map((item: any) => ({
       id: item.id, categoryId: item.categoryId,
-      estimatedWeight: item.estimatedWeight, actualWeight: item.actualWeight,
+      estimatedWeight: item.estimatedWeight, actualWeight: item.actualWeight??pendingWeights.find((weight:any)=>weight.itemId===item.id)?.actualWeight,
       ratePerKg: item.ratePerKg,
       subtotal: Number.isFinite(item.subtotal) ? item.subtotal :
         (Number(item.actualWeight ?? item.estimatedWeight) || 0) * (Number(item.ratePerKg) || 0),

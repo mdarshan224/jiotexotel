@@ -1,9 +1,10 @@
+import {prepareWeightAdjustment,finalizeWeightAdjustmentTx,publicWeightAdjustment,WeightAdjustmentError} from '@/lib/orders/weightAdjustment';
 import {reconcilePickupMilestonesTx} from '@/lib/pickupMilestones';
 import { requirePickupVerified, PickupOtpError } from '@/lib/orders/pickupOtp';
 import { agentOnboardingApproved } from '@/lib/cashfree/agentOnboarding';
 import { agentOrder } from '@/lib/orders/agentOrder';
 import { createUniqueMany } from '@/lib/createUniqueMany';
-import { NextRequest } from 'next/server';
+import { NextRequest,NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getAuthUser } from '@/lib/auth/middleware';
 import { validateStatusTransition } from '@/lib/validations/schemas';
@@ -56,6 +57,7 @@ export async function POST(
         items: { include: { category: true } },
         weightRecords: { orderBy: { createdAt: 'desc' }, take: 1, select: { id: true } },
         invoices: { take: 1, select: { id: true } },
+        weightAdjustment:true,
       },
     });
     logTiming('order lookup complete');
@@ -80,7 +82,9 @@ export async function POST(
     await requirePickupVerified(db, id, authUser.agentId!);
 
     const body = await req.json().catch(() => ({}));
-    const { actualWeights, scalePhotoUrl, notes } = body;
+    let { actualWeights } = body;
+    const {scalePhotoUrl,notes}=body;
+    if((!Array.isArray(actualWeights)||!actualWeights.length)&&order.financialDirection==='CUSTOMER_PAYS'&&order.weightAdjustment)actualWeights=JSON.parse(order.weightAdjustment.weightsJson);
     const hasWeightPayload = Array.isArray(actualWeights) && actualWeights.length > 0;
 
     // Verify weighing record exists or valid scale weights are supplied in the request body
@@ -92,7 +96,7 @@ export async function POST(
         return errorResponse('WEIGHING_REQUIRED', 'Order has no items to complete.', 400);
       }
       const unweighedItem = order.items.find(
-        (item) => typeof item.actualWeight !== 'number' || !Number.isFinite(item.actualWeight) || item.actualWeight <= 0
+        (item) => typeof item.actualWeight !== 'number' || !Number.isFinite(item.actualWeight) || item.actualWeight < 0
       );
       if (unweighedItem) {
         return errorResponse('WEIGHING_REQUIRED', 'All order items must have valid recorded weights. All order items must have recorded scale weights before completing pickup.', 400);
@@ -118,8 +122,8 @@ export async function POST(
           return errorResponse('INVALID_WEIGH_DATA', 'Each order item must have exactly one actual weight.', 400);
         }
 
-        if (typeof itemInput.actualWeight !== 'number' || !Number.isFinite(itemInput.actualWeight) || itemInput.actualWeight <= 0) {
-          return errorResponse('INVALID_WEIGH_DATA', 'Each actual weight must be a positive number for a valid order item.', 400);
+        if (typeof itemInput.actualWeight !== 'number' || !Number.isFinite(itemInput.actualWeight) || itemInput.actualWeight < 0) {
+          return errorResponse('INVALID_WEIGH_DATA', 'Each actual weight must be zero or a positive number for a valid order item.', 400);
         }
 
         submittedItemIds.add(itemId);
@@ -145,7 +149,15 @@ export async function POST(
     const itemUpdates: Array<{ id: string; actualWeight: number; subtotal: number }> = [];
 
     let completionValuation: any = null;
-    if (hasWeightPayload) {
+    let paidWeightAdjustment:any=null;
+    if(hasWeightPayload&&order.financialDirection==='CUSTOMER_PAYS'&&['CAPTURED','SUCCESS','PARTIALLY_REFUNDED'].includes(order.paymentStatus)){
+      paidWeightAdjustment=await prepareWeightAdjustment(id,authUser.agentId!,actualWeights);
+      if(paidWeightAdjustment.extraPaise>0&&paidWeightAdjustment.status!=='PAID')return NextResponse.json({success:false,error:{code:'WEIGHT_PAYMENT_REQUIRED',message:'Confirm the extra weight payment before completing this pickup.'},data:{weightAdjustment:publicWeightAdjustment(paidWeightAdjustment)}},{status:402});
+      financialDirection='CUSTOMER_PAYS';finalAmount=paidWeightAdjustment.actualPaise/100;actualTotalRecyclable=finalAmount;
+      for(const input of actualWeights){const item=orderItemsById.get(input.itemId);if(item)itemUpdates.push({id:item.id,actualWeight:input.actualWeight,subtotal:Math.max(0,Math.round((item.subtotal+(input.actualWeight-item.estimatedWeight)*item.ratePerKg)*100)/100)});}
+      totalWeightKg=actualWeights.reduce((total:number,input:any)=>total+input.actualWeight,0);
+    }
+    if (hasWeightPayload&&!paidWeightAdjustment) {
       const calculationItems: CalculationItemInput[] = [];
       for (const itemInput of actualWeights) {
         const dbItem = orderItemsById.get(itemInput.itemId);
@@ -197,6 +209,7 @@ export async function POST(
           items: { include: { category: true } },
           weightRecords: { orderBy: { createdAt: 'desc' }, take: 1 },
           invoices: { take: 1 },
+        weightAdjustment:true,
         },
       });
 
@@ -229,7 +242,7 @@ export async function POST(
       if (!hasWeightPayload) {
         const itemsToCheck = currentOrder.items && currentOrder.items.length > 0 ? currentOrder.items : order.items;
         const unweighed = itemsToCheck.find(
-          (item: any) => typeof item.actualWeight !== 'number' || !Number.isFinite(item.actualWeight) || item.actualWeight <= 0
+          (item: any) => typeof item.actualWeight !== 'number' || !Number.isFinite(item.actualWeight) || item.actualWeight < 0
         );
         const wrCount = currentOrder.weightRecords?.length ?? order.weightRecords.length;
         if (unweighed || wrCount === 0) {
@@ -261,7 +274,7 @@ export async function POST(
           },
         });
 
-        if (completionValuation) {
+        if (completionValuation&&!paidWeightAdjustment) {
           const capturedPayment = (tx as any).payment?.findFirst ? await (tx as any).payment.findFirst({
             where: { orderId: id, direction: 'CUSTOMER_PAYS', status: 'CAPTURED' },
           }) : null;
@@ -334,6 +347,7 @@ export async function POST(
         orderUpdateData.finalAmount = finalAmount;
       }
 
+      if(paidWeightAdjustment){await finalizeWeightAdjustmentTx(tx,currentOrder);if(paidWeightAdjustment.refundPaise>0)orderUpdateData.paymentStatus=paidWeightAdjustment.actualPaise===0?'REFUNDED':'PARTIALLY_REFUNDED';}
       const previousTax = getOrderTaxBreakdown(currentOrder);
       const split = splitPickupEarnings(finalAmount, previousTax.gstRate, previousTax.isInterState);
       const tax = earningsTax(split);
@@ -391,6 +405,7 @@ export async function POST(
           items: { include: { category: true } },
           weightRecords: true,
           invoices: true,
+          weightAdjustment:true,
         },
       });
       logTiming('completion transaction complete');
@@ -488,6 +503,7 @@ export async function POST(
     invalidateAdminOperationsCaches();
     return successResponse(agentOrder(completedOrder));
   } catch (err: any) {
+    if(err instanceof WeightAdjustmentError)return errorResponse('WEIGHT_ADJUSTMENT_REQUIRED',err.message,err.status);
     if (err instanceof PickupOtpError) return errorResponse('PICKUP_OTP_REQUIRED', err.message, err.status);
     if (err?.code === 'P2034') return errorResponse('ORDER_STATE_CHANGED', 'Pickup state changed. Refresh to check completion before trying again.', 409);
     console.error('Complete order error:', err);

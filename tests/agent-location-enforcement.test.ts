@@ -1,3 +1,4 @@
+import {approveFixtureAgent} from './fixtures/approvedKyc';
 import {describe,it,expect,vi,beforeEach,afterEach} from 'vitest';
 const state=vi.hoisted(()=>({db:null as any,auth:null as any,recovery:vi.fn(),send:vi.fn()}));
 vi.mock('@/lib/db',()=>({db:new Proxy({},{get(_t,p){const v=state.db[p];return typeof v==='function'?v.bind(state.db):v;}})}));
@@ -28,6 +29,7 @@ beforeEach(async()=>{
  vi.clearAllMocks();state.send.mockResolvedValue({success:true,requestId:'fixture'});d=await localDatabase();state.db=d.prisma;
  a=await d.prisma.user.create({data:{phone:'7000000091',name:'Near',role:'AGENT',agent:{create:{status:'OFFLINE',serviceAreas:'all'}}},include:{agent:true}});
  b=await d.prisma.user.create({data:{phone:'7000000092',name:'Far',role:'AGENT',agent:{create:{status:'OFFLINE',serviceAreas:'all'}}},include:{agent:true}});
+ await approveFixtureAgent(d.prisma,a.agent.id);await approveFixtureAgent(d.prisma,b.agent.id);
  const c=await d.prisma.user.create({data:{phone:'7000000093',name:'Customer',customer:{create:{}}},include:{customer:true}});
  const addr=await d.prisma.address.create({data:{userId:c.id,name:'Pickup',phone:c.phone,houseNo:'1',street:'Test',area:'BTM Layout',lat:12.9161,lng:77.6101,pincode:'560076'}});
  order=await d.prisma.order.create({data:{orderNumber:'JIO-LOCATION',customerId:c.customer!.id,addressId:addr.id,status:'BOOKING_RECEIVED',paymentStatus:'CAPTURED',financialDirection:'CUSTOMER_PAYS',timeoutPolicyVersion:1,assignmentDeadlineAt:new Date(Date.now()+25*60_000)}});

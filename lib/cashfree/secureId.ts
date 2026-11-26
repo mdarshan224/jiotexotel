@@ -23,7 +23,7 @@ export function secureIdLink(value:unknown,mode=secureIdConfig().mode){
 }
 export async function secureIdRequest(path:string,body?:Record<string,unknown>){
  const c=secureIdConfig();if(!c.ready)throw new SecureIdError('Identity verification setup is pending. Please contact dispatch.');
- if(!/^form(?:\?verificationID=[A-Za-z0-9_-]+)?$/.test(path))throw new SecureIdError('Invalid verification request.',400);
+ if(!/^(?:form(?:\?verificationID=[A-Za-z0-9_-]+)?|digilocker(?:\?verification_id=[A-Za-z0-9_-]+)?|digilocker\/document\/AADHAAR\?verification_id=[A-Za-z0-9_-]+|pan|bank-account\/sync|ifsc|driving-license|vehicle-rc|name-match)$/.test(path))throw new SecureIdError('Invalid verification request.',400);
  const signature=await secureIdSignature(c.clientId,c.publicKey);
  let response:Response;
  try{response=await fetch(`https://${c.mode==='sandbox'?'sandbox':'api'}.cashfree.com/verification/${path}`,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','x-client-id':c.clientId,'x-client-secret':c.clientSecret,'x-cf-signature':signature,'x-api-version':'2022-09-13'},body:body?JSON.stringify(body):undefined,redirect:'manual',signal:AbortSignal.timeout(15000),cache:'no-store'});}catch{throw new SecureIdError('Verification request is awaiting confirmation. Check status before trying again.');}
@@ -37,6 +37,6 @@ export function verificationSummary(data:any,verificationId:string){
  return {providerStatus:status,checksJson:JSON.stringify(checks)};
 }
 export function verifiedKyc(record:any){
- if(!record||!['SUCCESS','COMPLETED','VERIFIED'].includes(record.providerStatus))return false;
- try{const checks=JSON.parse(record.checksJson);return Array.isArray(checks)&&checks.length>0&&checks.every((c:any)=>c.status==='SUCCESS');}catch{return false;}
+ if(!record||record.flowVersion!==2||record.providerStatus!=='VERIFIED'||!['APPROVED','AUTO_APPROVED'].includes(record.reviewStatus))return false;
+ try{const checks=JSON.parse(record.checksJson);return ['AADHAAR','PAN','BANK_ACCOUNT','IFSC','DRIVING_LICENSE','VEHICLE_RC'].every(type=>checks.some((c:any)=>c.type===type&&(c.status==='SUCCESS'||(c.status==='MANUAL_APPROVED'&&record.reviewStatus==='APPROVED'))));}catch{return false;}
 }

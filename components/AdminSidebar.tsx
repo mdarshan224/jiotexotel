@@ -80,6 +80,8 @@ export default function AdminSidebar() {
     { href: '/admin/waste-categories', label: 'Waste Categories', icon: Trash2 },
     { href: '/admin/pricing', label: 'Pricing & Rates', icon: Tag },
     { href: '/admin/service-areas', label: 'Service Areas', icon: Globe },
+    { href: '/admin/refund-requests', label: 'Scheduled Refunds', icon: CreditCard },
+    { href: '/admin/integrations/payments', label: 'Payment & KYC Setup', icon: Settings },
     { href: '/admin/payments', label: 'Payments & Settlement', icon: CreditCard },
     { href: '/admin/wallets', label: 'Customer Wallets', icon: WalletCards },
     { href: '/admin/wallet-bonus-campaigns', label: 'Wallet Bonus Campaigns', icon: WalletCards },

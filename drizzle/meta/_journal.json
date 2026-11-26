@@ -64,6 +64,13 @@
       "when": 1795384650334,
       "tag": "0008_agent_location_presence",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1795684175961,
+      "tag": "0009_payments_kyc_upgrade",
+      "breakpoints": true
     }
   ]
 }

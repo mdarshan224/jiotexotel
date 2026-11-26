@@ -46,6 +46,8 @@ export const CustomerWallet = sqliteTable("CustomerWallet", {
 });
 
 export const WalletTransaction = sqliteTable("WalletTransaction", {
+  refundAllocationJson: text("refundAllocationJson"),
+
   id: text("id").primaryKey(),
   walletId: text("walletId").notNull().references((): AnySQLiteColumn => CustomerWallet.id, {onDelete:"cascade"}),
   customerId: text("customerId").notNull().references((): AnySQLiteColumn => Customer.id, {onDelete:"cascade"}),
@@ -159,6 +161,8 @@ export const CustomerSubscription = sqliteTable("CustomerSubscription", {
 }, table => [index("CustomerSubscription_customerId_status_expiryDate_0").on(table.customerId,table.status,table.expiryDate),index("CustomerSubscription_offerId_createdAt_1").on(table.offerId,table.createdAt),index("CustomerSubscription_status_expiryDate_2").on(table.status,table.expiryDate)]);
 
 export const SubscriptionPayment = sqliteTable("SubscriptionPayment", {
+  offerSnapshotJson: text("offerSnapshotJson").notNull().default("{}"),
+
   id: text("id").primaryKey(),
   customerId: text("customerId").notNull().references((): AnySQLiteColumn => Customer.id, {onDelete:"cascade"}),
   offerId: text("offerId").notNull().references((): AnySQLiteColumn => SubscriptionOffer.id, {onDelete:"restrict"}),
@@ -356,6 +360,7 @@ export const WeightRecord = sqliteTable("WeightRecord", {
 });
 
 export const Payment = sqliteTable("Payment", {
+  purpose: text("purpose").notNull().default("BOOKING"),
   id: text("id").primaryKey(),
   orderId: text("orderId").notNull().references((): AnySQLiteColumn => Order.id, {onDelete:"cascade"}),
   amount: real("amount").notNull(),
@@ -369,6 +374,8 @@ export const Payment = sqliteTable("Payment", {
 }, table => [index("Payment_gatewayOrderId_direction_0").on(table.gatewayOrderId,table.direction),index("Payment_paymentId_1").on(table.paymentId),index("Payment_orderId_direction_status_2").on(table.orderId,table.direction,table.status),index("Payment_status_amount_3").on(table.status,table.amount)]);
 
 export const RefundRequest = sqliteTable("RefundRequest", {
+  destination: text("destination").notNull().default("WALLET"),
+
   id: text("id").primaryKey(),
   orderId: text("orderId").notNull().unique().references((): AnySQLiteColumn => Order.id, {onDelete:"restrict"}),
   paymentId: text("paymentId").notNull().unique().references((): AnySQLiteColumn => Payment.id, {onDelete:"restrict"}),
@@ -386,6 +393,8 @@ export const RefundRequest = sqliteTable("RefundRequest", {
 }, table => [index("RefundRequest_status_createdAt_0").on(table.status,table.createdAt)]);
 
 export const RefundAttempt = sqliteTable("RefundAttempt", {
+  destination: text("destination").notNull().default("WALLET"),
+
   id: text("id").primaryKey(),
   orderId: text("orderId").notNull(),
   paymentId: text("paymentId").notNull(),
@@ -570,6 +579,13 @@ export const PickupEarning = sqliteTable("PickupEarning", {
   createdAt: text("createdAt").notNull().default(sql`(strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'))`),
 }, table => [index("PickupEarning_agentId_createdAt").on(table.agentId,table.createdAt)]);
 export const AgentKyc = sqliteTable("AgentKyc", {
+  flowVersion: integer("flowVersion").notNull().default(0),
+  evidenceJson: text("evidenceJson").notNull().default("{}"),
+  profileJson: text("profileJson").notNull().default("{}"),
+  issuesJson: text("issuesJson").notNull().default("[]"),
+  reviewReason: text("reviewReason"),
+  revision: integer("revision").notNull().default(0),
+
   id: text("id").primaryKey(),
   agentId: text("agentId").notNull().unique().references((): AnySQLiteColumn => Agent.id,{onDelete:"cascade"}),
   verificationId: text("verificationId").notNull().unique(), templateName: text("templateName").notNull(),
@@ -598,4 +614,12 @@ export const voiceRoutingConfig = sqliteTable('VoiceRoutingConfig', {
  supportFallbackUserId:text('supportFallbackUserId'),
  flowUrl: text('flowUrl').notNull(),
  updatedAt: text('updatedAt').notNull(),
+});
+
+export const OrderWeightAdjustment = sqliteTable('OrderWeightAdjustment', {
+ id:text('id').primaryKey(), orderId:text('orderId').notNull().unique().references(()=>Order.id,{onDelete:'cascade'}),
+ bookedPaise:integer('bookedPaise').notNull(),actualPaise:integer('actualPaise').notNull(),extraPaise:integer('extraPaise').notNull().default(0),refundPaise:integer('refundPaise').notNull().default(0),
+ weightsJson:text('weightsJson').notNull(),weightsHash:text('weightsHash').notNull(),status:text('status').notNull().default('READY'),
+ qrId:text('qrId').unique(),qrImageUrl:text('qrImageUrl'),qrExpiresAt:text('qrExpiresAt'),gatewayOrderId:text('gatewayOrderId').unique(),providerPaymentId:text('providerPaymentId').unique(),
+ createdAt:text('createdAt').notNull().default(sql`(strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'))`),updatedAt:text('updatedAt').notNull(),
 });

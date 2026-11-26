@@ -1,3 +1,4 @@
+import {agentOnboardingApproved} from '@/lib/cashfree/agentOnboarding';
 import {hasFreshAgentPresence,ONLINE_AGENT_STATUSES} from '@/lib/agents/locationPolicy';
 import { NextRequest } from 'next/server';
 import { getAuthUser } from '@/lib/auth/middleware';
@@ -46,6 +47,7 @@ export async function GET(req: NextRequest) {
     }
 
     const agentProfileComplete = user.role !== 'AGENT' || Boolean(user.agent);
+    const onboardingApproved=user.agent?await agentOnboardingApproved(db,user.agent.id):false;
 
     return successResponse({
       user: {
@@ -56,7 +58,7 @@ export async function GET(req: NextRequest) {
         email: user.email,
         role: authUser.role || user.role,
         customer: user.customer,
-        agent: user.agent?{...user.agent,status:ONLINE_AGENT_STATUSES.includes(user.agent.status)&&!hasFreshAgentPresence(user.agent)?'OFFLINE':user.agent.status}:user.agent,
+        agent: user.agent?{...user.agent,onboardingApproved,status:!onboardingApproved||ONLINE_AGENT_STATUSES.includes(user.agent.status)&&!hasFreshAgentPresence(user.agent)?'OFFLINE':user.agent.status}:user.agent,
         admin: user.admin,
         addresses: user.addresses,
       },

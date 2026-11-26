@@ -8,7 +8,7 @@ export default function AgentBottomNav() {
   const pathname = usePathname();
 
   // Only render inside /agent paths
-  if (!pathname.startsWith('/agent')) return null;
+  if (!pathname.startsWith('/agent')||pathname==='/agent/onboarding') return null;
 
   const links = [
     { href: '/agent', label: 'Dashboard', icon: LayoutDashboard },

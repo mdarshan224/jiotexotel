@@ -1,0 +1,2 @@
+export const approvedKyc={flowVersion:2,providerStatus:'VERIFIED',reviewStatus:'AUTO_APPROVED',checksJson:JSON.stringify(['AADHAAR','PAN','BANK_ACCOUNT','IFSC','DRIVING_LICENSE','VEHICLE_RC'].map(type=>({type,status:'SUCCESS'})))};
+export async function approveFixtureAgent(db:any,agentId:string){return db.agentKyc.create({data:{agentId,verificationId:'fixture-'+agentId,templateName:'JIO_FULL_KYC_V2',consentAt:new Date(),expiresAt:new Date(Date.now()+86400000),...approvedKyc}});}

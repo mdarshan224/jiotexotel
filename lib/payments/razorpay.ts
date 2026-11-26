@@ -112,6 +112,7 @@ export function closeRazorpayConnections(): void {
 }
 
 export function warmRazorpayConnection(): void {
+  if(process.env.NODE_ENV==='production')return;
   try {
     const agent = getRazorpayHttpsAgent();
     if (!agent || typeof https?.request !== 'function') return;
@@ -132,7 +133,7 @@ export function warmRazorpayConnection(): void {
 }
 
 // Auto-warm connection in Node server environment
-if (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'test') {
+if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
   try {
     warmRazorpayConnection();
   } catch {}
@@ -148,6 +149,19 @@ function executeSingleRazorpayRequest(
   const { keyId, secret } = requireCredentials();
   const auth = Buffer.from(`${keyId}:${secret}`).toString("base64");
   const payload = bodyData ? JSON.stringify(bodyData) : "";
+
+  // Workers use their native HTTPS transport; no TCP socket pool or Node agent.
+  if (process.env.NODE_ENV === 'production') {
+    return fetch(`https://api.razorpay.com/v1${path}`, {
+      method, headers: {Authorization:`Basic ${auth}`, 'Content-Type':'application/json', ...additionalHeaders},
+      ...(payload ? {body:payload} : {}), redirect:'manual', cache:'no-store', signal:AbortSignal.timeout(15000),
+    }).then(async response => {
+      if(response.status>=300&&response.status<400)throw new RazorpayApiError('Payment provider redirects are not permitted.',502);
+      const data=await response.json().catch(()=>{throw new Error('Invalid response received from Razorpay gateway.');});
+      if(!response.ok)throw new RazorpayApiError('Payment provider request could not be completed.',response.status);
+      return data;
+    });
+  }
 
   return new Promise((resolve, reject) => {
     const requestStartedAt = monotonicNow();
@@ -331,7 +345,7 @@ export async function createRazorpayOrder(input: {
       notes: input.notes,
     });
 
-    if (typeof data?.id !== "string" || !data.id.trim()) {
+    if (typeof data?.id !== "string" || !data.id.trim() || data.amount!==input.amountInPaise || data.currency!=="INR") {
       throw new RazorpayOrderCreationError(
         "Invalid response received from Razorpay gateway.",
         false,
@@ -403,14 +417,7 @@ export async function fetchRazorpayOrderPayments(gatewayOrderId: string) {
     throw new Error("Razorpay order ID is required.");
   }
 
-  try {
-    return await razorpayRequest(
-      "GET",
-      `/orders/${encodeURIComponent(gatewayOrderId.trim())}/payments`,
-    );
-  } catch {
-    return { entity: "collection", count: 0, items: [] };
-  }
+  return await razorpayRequest("GET", `/orders/${encodeURIComponent(gatewayOrderId.trim())}/payments`);
 }
 
 // ---------------------------------------------------------
@@ -518,4 +525,25 @@ export async function fetchRazorpayPaymentRefunds(paymentId: string) {
     "GET",
     `/payments/${encodeURIComponent(paymentId.trim())}/refunds?count=100&skip=0`,
   );
+}
+
+export async function captureRazorpayPayment(paymentId:string,amountPaise:number){
+ if(!/^pay_[A-Za-z0-9]+$/.test(paymentId)||!Number.isSafeInteger(amountPaise)||amountPaise<=0)throw new Error('Invalid payment capture request.');
+ try{return await razorpayRequest('POST',`/payments/${encodeURIComponent(paymentId)}/capture`,{amount:amountPaise,currency:'INR'});}
+ catch(error){const observed=await fetchRazorpayPayment(paymentId);if(observed.status==='captured'&&observed.amount===amountPaise&&observed.currency==='INR')return observed;throw error;}
+}
+export async function createRazorpayQr(amountPaise:number,adjustmentId:string,orderNumber:string){
+ if(!Number.isSafeInteger(amountPaise)||amountPaise<=0)throw new Error('Invalid QR payment amount.');
+ return razorpayRequest('POST','/payments/qr_codes',{type:'upi_qr',name:'Junk It Out',usage:'single_use',fixed_amount:true,payment_amount:amountPaise,description:`Pickup ${orderNumber}`.slice(0,100),close_by:Math.floor(Date.now()/1000)+1800,notes:{purpose:'weight_adjustment',adjustment_id:adjustmentId}});
+}
+export async function fetchRazorpayQrPayments(qrId:string){
+ if(!/^qr_[A-Za-z0-9]+$/.test(qrId))throw new Error('Invalid QR reference.');
+ return razorpayRequest('GET',`/payments/qr_codes/${encodeURIComponent(qrId)}/payments?count=100`);
+}
+export async function fetchRazorpayQr(qrId:string){
+ if(!/^qr_[A-Za-z0-9]+$/.test(qrId))throw new Error('Invalid QR reference.');
+ return razorpayRequest('GET',`/payments/qr_codes/${encodeURIComponent(qrId)}`);
+}
+export async function findRazorpayQr(adjustmentId:string){
+ for(let skip=0;skip<500;skip+=100){const list=await razorpayRequest('GET',`/payments/qr_codes?count=100&skip=${skip}`);const found=list.items?.find((item:any)=>item.notes?.adjustment_id===adjustmentId);if(found)return found;if(!Array.isArray(list.items)||list.items.length<100)break;}return null;
 }
