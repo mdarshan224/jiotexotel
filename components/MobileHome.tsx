@@ -1,4 +1,5 @@
 import Link from '@/components/AppLink';
+import MobileHomeMilestones from './MobileHomeMilestones';
 import { ArrowUpRight, BadgeIndianRupee, PackageCheck, Headphones, Wallet, ShieldCheck, Recycle, Truck } from 'lucide-react';
 
 const shortcuts = [
@@ -11,6 +12,7 @@ const shortcuts = [
 export default function MobileHome() {
   return <section className="mobile-home md:hidden" aria-label="Pickup dashboard">
     <div className="mobile-home-greeting"><span>WELCOME TO JUNK IT OUT</span><h1>A little less clutter.<br />A lot more space.</h1></div>
+    <MobileHomeMilestones />
     <div className="mobile-pickup-banner mobile-welcome-banner">
       <div className="mobile-banner-copy">
         <span className="mobile-banner-badge"><Recycle size={13} /> DOORSTEP PICKUP</span>
