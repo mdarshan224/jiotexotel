@@ -1,9 +1,11 @@
 'use client';
 import {agentFetch as fetch} from '@/lib/agentFetch';
 import {useAgentSession} from '@/components/AgentSession';
+import PartnerProgress from '@/components/agent/PartnerProgress';
+import {CircleHelp, Menu} from 'lucide-react';
 import WeightAdjustmentPayment from '@/components/WeightAdjustmentPayment';
 import {ONLINE_AGENT_STATUSES} from '@/lib/agents/locationPolicy';
-import {agentPickupGroup, agentLedgerTotals, agentWeightRows} from '@/lib/agentPortal';
+import {agentPickupGroup, agentWeightRows} from '@/lib/agentPortal';
 import {AgentPickupOtp} from '@/components/PickupVerification';
 import OrderCallButton from '@/components/OrderCallButton';
 import CenteredModalLayer from '@/components/CenteredModalLayer';
@@ -48,7 +50,6 @@ export default function AgentDashboardPage() {
   const [historySearch,setHistorySearch] = useState('');
   const [historyFilter,setHistoryFilter] = useState('all');
   const [lastSynced,setLastSynced] = useState<Date|null>(null);
-  const [walletError,setWalletError] = useState<string|null>(null);
   const weightOrderRef = useRef<string|null>(null);
   const [agent, setAgent] = useState<any>(null);
   const agentRef = useRef<any>(null);
@@ -89,14 +90,6 @@ export default function AgentDashboardPage() {
   const [submittingWeigh, setSubmittingWeigh] = useState(false);
   const [weighModalError, setWeighModalError] = useState<string | null>(null);
 
-  // Agent Wallet & Earnings Tracking State
-  const [walletData, setWalletData] = useState<{
-    balance: number;
-    transactions: any[];
-    totalEarnings: number;
-    totalDeductions: number;
-  } | null>(null);
-  const [loadingWallet, setLoadingWallet] = useState(false);
   const dataRequestRef = useRef(false);
   const refreshAfterRequestRef = useRef(false);
   const acceptingPickupRef = useRef(false);
@@ -270,51 +263,12 @@ export default function AgentDashboardPage() {
     }
   }, [refreshSession]);
 
-  const fetchAgentWallet = useCallback(async () => {
-    setLoadingWallet(true);
-    try {
-      const res = await fetch('/api/agent/wallet', {
-        headers: { Accept: 'application/json' },
-        cache: 'no-store',
-      });
-      const json = await res.json();
-      if (res.ok && json.success && json.data) {
-        const txs: any[] = json.data.transactions || [];
-        const totals = agentLedgerTotals(txs);
-        const earnings = totals.credits;
-        const deductions = totals.debits;
-        setWalletError(null);
-        setWalletData({
-          balance: Number(json.data.wallet?.balance || 0),
-          transactions: txs,
-          totalEarnings: earnings,
-          totalDeductions: deductions,
-        });
-      } else {
-        setWalletError(json.message || 'Wallet could not be refreshed.');
-      }
-    } catch {
-      setWalletError('Wallet connection failed. Refresh to retry.');
-      // Non-blocking
-    } finally {
-      setLoadingWallet(false);
-    }
-  }, []);
-
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
-    await Promise.all([fetchAgentData(false, true), fetchAgentWallet()]);
-  }, [fetchAgentData, fetchAgentWallet]);
-
-  useEffect(() => {
-    void fetchAgentData();
+    await fetchAgentData(false, true);
   }, [fetchAgentData]);
 
-  useEffect(() => {
-    if (agent?.id) {
-      void fetchAgentWallet();
-    }
-  }, [agent?.id, fetchAgentWallet]);
+  useEffect(() => { void fetchAgentData(); }, [fetchAgentData]);
 
   // Presence is mandatory whenever online, including while waiting for a pickup.
   useEffect(() => {
@@ -969,7 +923,6 @@ export default function AgentDashboardPage() {
         setActiveOrder(null);
         setActualWeightsInput([]);
         weightOrderRef.current = null;
-        void fetchAgentWallet();
         void fetchAgentData(false);
       } else {
         // Safe rollback on API rejection
@@ -1005,23 +958,23 @@ export default function AgentDashboardPage() {
     return (
       <div className="max-w-md mx-auto p-6 text-center pt-24 space-y-3">
         <RefreshCw className="w-8 h-8 text-emerald-500 animate-spin mx-auto" />
-        <p className="text-sm font-semibold text-slate-400">Loading Agent Portal...</p>
+        <p className="text-sm font-semibold text-slate-600">Loading Agent Portal...</p>
       </div>
     );
   }
 
-  if(!agent)return <section className="flex min-h-[100dvh] items-center justify-center bg-slate-950 p-6 text-white"><div className="max-w-sm space-y-5 text-center"><h1 className="text-xl font-bold">Your partner workspace</h1><p className="text-sm leading-6 text-slate-400">{dashboardError||'Loading your account. Please try again if this takes a moment.'}</p><button onClick={()=>void fetchAgentData()} className="min-h-12 rounded-xl bg-emerald-700 px-6 font-semibold">Try again</button><button onClick={()=>void handleLogout()} disabled={loggingOut} className="block min-h-11 w-full text-sm text-slate-400">Sign out</button></div></section>;
+  if(!agent)return <section className="flex min-h-[100dvh] items-center justify-center bg-white p-6 text-slate-900"><div className="max-w-sm space-y-5 text-center"><h1 className="text-xl font-bold">Your partner workspace</h1><p className="text-sm leading-6 text-slate-600">{dashboardError||'Loading your account. Please try again if this takes a moment.'}</p><button onClick={()=>void fetchAgentData()} className="min-h-12 rounded-xl bg-emerald-700 px-6 font-semibold">Try again</button><button onClick={()=>void handleLogout()} disabled={loggingOut} className="block min-h-11 w-full text-sm text-slate-600">Sign out</button></div></section>;
 
-  const todayPickups = orders.length;
-  const completedPickups = orders.filter((o) => agentPickupGroup(o.status)==='completed');
-  const completedCount = completedPickups.length;
-  const pendingCount = orders.filter(o=>agentPickupGroup(o.status)==='active').length;
   const visibleHistory = orders.filter(o => (historyFilter==='all' || agentPickupGroup(o.status)===historyFilter) && `${o.orderNumber} ${o.address?.area || ''}`.toLowerCase().includes(historySearch.toLowerCase()));
 
   return (
-    <div className="agent-portal max-w-3xl mx-auto min-h-screen bg-slate-900 text-white pb-24">
+    <div className="agent-portal partner-dashboard max-w-3xl mx-auto min-h-screen bg-[#f5f6f8] text-slate-900 pb-28">
+      <header className="partner-home-toolbar">
+        <button type="button" role="switch" aria-checked={isOnline} aria-label="Pickup availability" disabled={statusUpdating} onClick={toggleAgentStatus} className={`partner-duty-switch ${isOnline?'is-online':''}`}><span className="partner-switch-track"><span/></span><span>{statusUpdating?'Updating…':isOnline?'Online':'Offline'}</span></button>
+        <div><button type="button" className="partner-icon-button" onClick={handleRefresh} disabled={isRefreshing} aria-label="Refresh pickup assignments"><RefreshCw size={20} className={isRefreshing?'animate-spin':''}/></button><Link href="/agent/help" className="partner-toolbar-help"><CircleHelp size={19}/>Help</Link><Link href="/agent/more" className="partner-icon-button" aria-label="Your account"><Menu size={22}/></Link></div>
+      </header>
       {dashboardError && (
-        <div role="alert" className="p-3 text-xs text-amber-200 bg-amber-500/10 border-b border-amber-500/30 flex items-center justify-between gap-3">
+        <div role="alert" className="p-3 text-xs text-amber-700 bg-amber-500/10 border-b border-amber-500/30 flex items-center justify-between gap-3">
           <span>{dashboardError}</span>
           <button
             type="button"
@@ -1034,112 +987,60 @@ export default function AgentDashboardPage() {
         </div>
       )}
       {multipleActiveWarning && (
-        <div role="alert" className="p-3 text-xs font-bold text-amber-200 bg-amber-950/80 border-b border-amber-800 flex items-center justify-between gap-3">
+        <div role="alert" className="p-3 text-xs font-bold text-amber-700 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-3">
           <span>{multipleActiveWarning}</span>
         </div>
       )}
-      <p className="mx-4 mt-3 rounded-2xl border border-slate-700 bg-slate-800/70 px-4 py-3 text-xs text-slate-300">
+      <p className="mx-4 mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600">
         {isOnline ? (locationSharing ? 'Location is on · Bengaluru · Nearby pickup matching active' : 'Checking precise location…') : 'Allow precise location to go online in Bengaluru. Location stays on while online; going offline stops sharing.'}
       </p>
       {statusNotice && (
-        <div className="p-3 text-xs font-bold text-center text-emerald-300 bg-emerald-950/60 border-b border-emerald-800 animate-scale-in">
+        <div className="p-3 text-xs font-bold text-center text-emerald-700 bg-emerald-50 border-b border-emerald-200 animate-scale-in">
           {statusNotice}
         </div>
       )}
 
-      {/* AGENT TOP APP BAR */}
-      <div className="agent-toolbar p-4 bg-slate-900 border-b border-slate-800 sticky top-0 z-30 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-emerald-500 text-slate-950 font-black flex items-center justify-center text-lg">
-            {agent?.name ? agent.name.split(' ').map((part: string) => part[0]).slice(0,2).join('').toUpperCase() : 'AG'}
-          </div>
-          <div>
-            <h2 className="font-extrabold text-sm text-white">{agent?.name || 'Agent'}</h2>
-            <p className="text-[11px] text-slate-400 font-mono">{agent?.vehicleNumber || 'No vehicle assigned'}{agent?.vehicleType ? ` (${agent.vehicleType})` : ''}</p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            aria-label="Refresh pickup assignments"
-            title="Refresh pickup assignments"
-            className="p-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-full border border-slate-700 disabled:opacity-50 transition-colors cursor-pointer"
-          >
-            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-          </button>
-          <button
-            type="button"
-            onClick={toggleAgentStatus}
-            disabled={statusUpdating}
-            className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-black border transition-all cursor-pointer disabled:opacity-50 ${
-              isOnline
-                ? 'btn-glossy-primary text-white shadow-emerald-500/20'
-                : 'btn-glossy-danger text-white shadow-rose-500/20'
-            }`}
-          >
-            {statusUpdating ? (
-              <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
-            ) : (
-              <Power className="w-3.5 h-3.5 shrink-0" />
-            )}
-            {isOnline ? 'ONLINE' : 'OFFLINE'}
-          </button>
-
-          <button
-            onClick={handleLogout}
-            disabled={loggingOut}
-            className="p-2.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-full transition-colors disabled:opacity-50 border border-slate-700"
-            title="Log Out"
-          >
-            {loggingOut ? <RefreshCw className="w-4 h-4 animate-spin shrink-0" /> : <LogOut className="w-4 h-4 shrink-0" />}
-          </button>
-        </div>
-      </div>
-
-      <section className="agent-workbench-hero">
-        <span>YOUR FIELD WORKSPACE</span>
-        <h1>{activeOrder ? 'Your next step, made clear.' : isOnline ? 'Ready for the next pickup.' : 'Start your shift with confidence.'}</h1>
-        <p>{activeOrder ? `Pickup #${activeOrder.orderNumber} · ${activeOrder.status.replaceAll('_',' ').toLowerCase()}` : isOnline ? 'Eligible pickup offers will appear here. Keep this portal open while on duty.' : 'Go online when you are ready to receive pickup offers.'}</p>
-        <small>{lastSynced ? `Last synced ${lastSynced.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}` : 'Waiting for assignment sync'}</small>
-        <nav aria-label="Agent workspace"><a href="#agent-current-job">Current job</a><a href="#agent-history">Pickups</a><Link href="/agent/wallet">Wallet</Link><Link href="/agent/onboarding">Verification</Link><a href="tel:+917676272709">Dispatch help</a></nav>
+      <section className="partner-welcome">
+        <div><span className="partner-eyebrow">JUNK IT OUT PARTNERS</span><p className="partner-greeting">Hi, {agent?.name?.split(' ')[0]||'partner'}.</p><h1>{activeOrder?'Your next pickup awaits.':isOnline?'You’re ready. Let’s make a difference.':'A cleaner city starts with you.'}</h1><p>{activeOrder?`Pickup #${activeOrder.orderNumber} · Follow your next step below.`:isOnline?'We’ll match eligible nearby pickups to you. Keep this portal open.':'Go online in Bengaluru when you’re ready for pickups.'}</p></div>
+        <div className="partner-hero-art" aria-hidden="true"><span className="partner-sun"/><Truck size={84} strokeWidth={1.3}/><span className="partner-road"/><span className="partner-leaf"><ShieldCheck size={24}/></span></div>
+        {activeOrder?<a href="#agent-current-job" className="partner-primary-button">Continue your pickup</a>:<button type="button" disabled={statusUpdating||isOnline} onClick={toggleAgentStatus} className="partner-primary-button">{statusUpdating?'Checking location…':isOnline?'Online · Looking for pickups':'Go online to receive pickups'}</button>}
+        <small>{lastSynced?`Updated ${lastSynced.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}`:'Syncing your assignments'}</small>
       </section>
+      <PartnerProgress refreshKey={lastSynced?.toISOString()}/>
       {/* REALTIME NEW PICKUP NOTIFICATION BANNER */}
       {newPickupNotice && (
-        <div className="mx-4 mt-4 bg-gradient-to-r from-emerald-950 via-slate-900 to-emerald-950 border-2 border-emerald-500 rounded-3xl p-5 shadow-2xl shadow-emerald-500/10">
+        <div className="mx-4 mt-4 bg-gradient-to-r from-emerald-50 via-white to-emerald-50 border-2 border-emerald-500 rounded-3xl p-5 shadow-sm shadow-emerald-500/10">
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-emerald-500 text-slate-950 flex items-center justify-center font-black animate-pulse shrink-0">
                 <Bell className="w-5 h-5" />
               </div>
               <div>
-                <span className="text-[10px] font-black tracking-widest text-emerald-400 uppercase bg-emerald-500/20 px-2.5 py-0.5 rounded-full border border-emerald-500/30">
+                <span className="text-xs font-black tracking-widest text-emerald-700 uppercase bg-emerald-500/20 px-2.5 py-0.5 rounded-full border border-emerald-500/30">
                   🔔 NEW PICKUP AVAILABLE
                 </span>
-                <h3 className="font-extrabold text-white text-sm mt-1">
+                <h3 className="font-extrabold text-slate-900 text-sm mt-1">
                   Order #{newPickupNotice.orderNumber}
                 </h3>
               </div>
             </div>
             <button
               onClick={() => setNewPickupNotice(null)}
-              className="text-slate-400 hover:text-white p-1 rounded-lg transition-colors"
+              className="text-slate-600 hover:text-slate-900 p-1 rounded-lg transition-colors"
               title="Dismiss notification"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
 
-          <div className="mt-3 pt-3 border-t border-slate-800 grid grid-cols-2 gap-2 text-xs">
+          <div className="mt-3 pt-3 border-t border-slate-200 grid grid-cols-2 gap-2 text-xs">
             <div>
-              <span className="text-slate-400 block text-[10px] uppercase font-bold">Service Area</span>
-              <span className="text-slate-200 font-semibold">{newPickupNotice.serviceArea || 'Bengaluru'}</span>
+              <span className="text-slate-600 block text-xs uppercase font-bold">Service Area</span>
+              <span className="text-slate-600 font-semibold">{newPickupNotice.serviceArea || 'Bengaluru'}</span>
             </div>
             <div>
-              <span className="text-slate-400 block text-[10px] uppercase font-bold">Est. Quantity</span>
-              <span className="text-emerald-400 font-semibold">{newPickupNotice.estimatedQuantity || 'N/A'}</span>
+              <span className="text-slate-600 block text-xs uppercase font-bold">Est. Quantity</span>
+              <span className="text-emerald-700 font-semibold">{newPickupNotice.estimatedQuantity || 'N/A'}</span>
             </div>
           </div>
 
@@ -1161,140 +1062,16 @@ export default function AgentDashboardPage() {
       )}
 
       <div id="agent-current-job" className="scroll-mt-36" />
-      {/* TODAY'S METRICS SUMMARY */}
-      <div className="p-4 grid grid-cols-3 gap-2">
-        <div className="bg-slate-800/80 p-3 rounded-2xl border border-slate-700/50 text-center">
-          <span className="text-xl font-black text-white block">{todayPickups}</span>
-          <span className="text-[10px] text-slate-400 uppercase font-semibold">Recent Total</span>
-        </div>
-        <div className="bg-slate-800/80 p-3 rounded-2xl border border-slate-700/50 text-center">
-          <span className="text-xl font-black text-amber-400 block">{pendingCount}</span>
-          <span className="text-[10px] text-slate-400 uppercase font-semibold">Pending</span>
-        </div>
-        <div className="bg-slate-800/80 p-3 rounded-2xl border border-slate-700/50 text-center">
-          <span className="text-xl font-black text-emerald-400 block">{completedCount}</span>
-          <span className="text-[10px] text-slate-400 uppercase font-semibold">Completed</span>
-        </div>
-      </div>
-
-      {walletError && <p role="alert" className="mx-4 p-3 rounded-xl bg-amber-950 text-amber-200 text-sm">{walletError}</p>}
-      {/* AGENT EARNINGS TRACKING SECTION */}
-      <div className="px-4">
-        <div className="rounded-3xl border border-slate-700 bg-slate-900/95 p-5 shadow-xl space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-            <div className="flex items-center gap-2">
-              <div className="p-2 bg-emerald-500/20 border border-emerald-500/30 rounded-xl text-emerald-400">
-                <Wallet className="w-4 h-4" />
-              </div>
-              <div>
-                <h3 className="text-xs font-black uppercase tracking-wider text-white">Earnings & Wallet</h3>
-                <p className="text-[10px] text-slate-400 font-semibold">Verified personal earnings ledger</p>
-              </div>
-            </div>
-            <Link
-              href="/agent/wallet"
-              className="flex items-center gap-1 text-[11px] font-bold text-emerald-400 hover:text-emerald-300 transition-colors"
-            >
-              <span>Full Ledger</span>
-              <ChevronRight className="w-3.5 h-3.5" />
-            </Link>
-          </div>
-
-          {/* Earnings Overview Cards */}
-          <div className="grid grid-cols-3 gap-2">
-            <div className="bg-slate-800/80 p-3 rounded-2xl border border-slate-700/60">
-              <span className="text-[9px] uppercase font-bold tracking-wider text-slate-400 block mb-0.5">Balance</span>
-              <p className="text-base font-black text-emerald-400">
-                ₹{(walletData?.balance ?? 0).toFixed(2)}
-              </p>
-            </div>
-            <div className="bg-slate-800/80 p-3 rounded-2xl border border-slate-700/60">
-              <span className="text-[9px] uppercase font-bold tracking-wider text-slate-400 block mb-0.5">Recent Credits</span>
-              <p className="text-base font-black text-white">
-                ₹{(walletData?.totalEarnings ?? 0).toFixed(2)}
-              </p>
-            </div>
-            <div className="bg-slate-800/80 p-3 rounded-2xl border border-slate-700/60">
-              <span className="text-[9px] uppercase font-bold tracking-wider text-slate-400 block mb-0.5">Recent Debits</span>
-              <p className="text-base font-black text-rose-400">
-                ₹{(walletData?.totalDeductions ?? 0).toFixed(2)}
-              </p>
-            </div>
-          </div>
-
-          {/* Recent Earnings Activity */}
-          <div className="space-y-2 pt-1">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
-                Recent Activity
-              </span>
-              {loadingWallet && <RefreshCw className="w-3 h-3 text-slate-500 animate-spin" />}
-            </div>
-
-            {walletData && walletData.transactions.length > 0 ? (
-              <div className="space-y-1.5">
-                {walletData.transactions.slice(0, 3).map((tx) => {
-                  const isCredit = tx.direction === 'CREDIT';
-                  return (
-                    <div
-                      key={tx.id}
-                      className="flex items-center justify-between p-2.5 rounded-xl bg-slate-800/50 border border-slate-800 text-xs"
-                    >
-                      <div className="space-y-0.5 min-w-0 pr-2">
-                        <div className="flex items-center gap-1.5">
-                          <span
-                            className={`rounded-full px-1.5 py-0.5 text-[9px] font-black uppercase ${
-                              isCredit
-                                ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/50'
-                                : 'bg-rose-950 text-rose-400 border border-rose-800/50'
-                            }`}
-                          >
-                            {tx.type}
-                          </span>
-                          <span className="text-[10px] text-slate-500 font-mono">
-                            {new Date(tx.createdAt).toLocaleDateString('en-IN')}
-                          </span>
-                        </div>
-                        <p className="text-slate-300 font-medium text-[11px] truncate">
-                          {tx.reason || 'Agent wallet transaction'}
-                        </p>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <span
-                          className={`font-black text-xs ${
-                            isCredit ? 'text-emerald-400' : 'text-rose-400'
-                          }`}
-                        >
-                          {tx.direction === 'CREDIT' ? '+' : tx.direction === 'DEBIT' ? '-' : ''}₹{Number(tx.amount).toFixed(2)}
-                        </span>
-                        <p className="text-[9px] text-slate-500 font-mono">
-                          Bal: ₹{Number(tx.balanceAfter).toFixed(2)}
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="p-3 rounded-2xl bg-slate-800/40 border border-slate-800 text-center">
-                <p className="text-[11px] text-slate-400">
-                  No earnings transactions recorded yet. Approved pickup earnings will appear here.
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
+      <div className="partner-section-title partner-current-heading"><h2>{activeOrder?'Current pickup':'Your next pickup'}</h2><Link href="/agent/pickups">All pickups <ChevronRight size={16}/></Link></div>
       {/* ACTIVE ASSIGNED ORDER */}
       {activeOrder ? (
         <div className="px-4 space-y-4">
-          <div className="bg-slate-800 rounded-3xl p-5 border border-slate-700 space-y-4 shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-700 pb-3">
+          <div className="bg-white rounded-3xl p-5 border border-slate-200 space-y-4 shadow-sm">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
               <span className="text-xs font-extrabold bg-emerald-500 text-slate-950 px-2.5 py-0.5 rounded-full uppercase">
                 Active Order
               </span>
-              <span className="text-xs text-slate-300 font-mono">{activeOrder.orderNumber}</span>
+              <span className="text-xs text-slate-600 font-mono">{activeOrder.orderNumber}</span>
             </div>
 
             <ol className="agent-job-progress" aria-label="Pickup progress">{['Assigned','Accepted','On the way','At doorstep','Weigh & complete'].map((label,index)=>{
@@ -1304,13 +1081,13 @@ export default function AgentDashboardPage() {
             {/* Customer Details & Contact */}
             <div className="flex items-start justify-between">
               <div>
-                <h3 className="font-extrabold text-base text-white">{activeOrder.address?.name}</h3>
-                <p className="text-xs text-slate-300 mt-0.5">Contact through secure calling</p>
-                <p className="text-xs text-slate-400 mt-2 leading-relaxed">
+                <h3 className="font-extrabold text-base text-slate-900">{activeOrder.address?.name}</h3>
+                <p className="text-xs text-slate-600 mt-0.5">Contact through secure calling</p>
+                <p className="text-xs text-slate-600 mt-2 leading-relaxed">
                   📍 {activeOrder.address?.houseNo}, {activeOrder.address?.street}, {activeOrder.address?.area}
                 </p>
                 {activeOrder.address?.pickupInstructions && (
-                  <p className="text-[11px] text-amber-300 bg-amber-950/40 p-2 rounded-xl border border-amber-800/40 mt-2">
+                  <p className="text-xs text-amber-700 bg-amber-50 p-2 rounded-xl border border-amber-200 mt-2">
                     Note: "{activeOrder.address.pickupInstructions}"
                   </p>
                 )}
@@ -1320,8 +1097,8 @@ export default function AgentDashboardPage() {
             </div>
 
             {isOnline && ['AGENT_ACCEPTED', 'AGENT_ON_WAY', 'AGENT_ARRIVED', 'WEIGHING', 'WASTE_VERIFICATION'].includes(activeOrder.status) && (
-              <div className="rounded-2xl border border-slate-700 bg-slate-800/70 p-3 space-y-2">
-                <p className="text-xs text-slate-300">
+              <div className="rounded-2xl border border-slate-200 bg-white p-3 space-y-2">
+                <p className="text-xs text-slate-600">
                   Precise location stays on while you are online. It is used for nearby pickups and shared with this customer during the active pickup.
                 </p>
                 <button
@@ -1329,7 +1106,7 @@ export default function AgentDashboardPage() {
                   onClick={toggleAgentStatus}
                   disabled={!geolocationSupported}
                   aria-pressed={locationSharing}
-                  className="w-full rounded-full border border-emerald-700 px-4 py-3 text-xs font-bold text-emerald-300 disabled:opacity-50"
+                  className="w-full rounded-full border border-emerald-200 px-4 py-3 text-xs font-bold text-emerald-700 disabled:opacity-50"
                 >
                   GO OFFLINE TO STOP LOCATION SHARING
                 </button>
@@ -1337,11 +1114,11 @@ export default function AgentDashboardPage() {
             )}
 
             {/* Waste Items Summary */}
-            <div className="pt-2 border-t border-slate-700">
-              <span className="text-[11px] font-bold text-slate-400 uppercase">Declared Waste:</span>
+            <div className="pt-2 border-t border-slate-200">
+              <span className="text-xs font-bold text-slate-600 uppercase">Declared Waste:</span>
               <div className="flex flex-wrap gap-1.5 mt-1.5">
                 {activeOrder.items?.map((item: any) => (
-                  <span key={item.id} className="text-xs font-semibold bg-slate-700 text-slate-200 px-2.5 py-1 rounded-lg">
+                  <span key={item.id} className="text-xs font-semibold bg-slate-700 text-slate-600 px-2.5 py-1 rounded-lg">
                     {item.category?.name} ({item.estimatedWeight}kg)
                   </span>
                 ))}
@@ -1353,20 +1130,20 @@ export default function AgentDashboardPage() {
               href={`https://maps.google.com/?q=${activeOrder.address?.lat},${activeOrder.address?.lng}`}
               target="_blank"
               rel="noreferrer"
-              className="w-full btn-glossy-dark rounded-full text-white font-bold text-xs py-3.5 flex items-center justify-center gap-2 border border-slate-600 shadow-sm"
+              className="w-full btn-glossy-dark rounded-full text-slate-900 font-bold text-xs py-3.5 flex items-center justify-center gap-2 border border-slate-200 shadow-sm"
             >
-              <Navigation className="w-4 h-4 text-emerald-400 shrink-0" />
+              <Navigation className="w-4 h-4 text-emerald-700 shrink-0" />
               OPEN GOOGLE MAPS NAVIGATION
             </a>
           </div>
 
           {/* SEQUENTIAL AGENT ACTION BUTTONS */}
           <div className="space-y-2">
-            <span className="text-xs font-bold text-slate-400 uppercase px-1">Pickup Workflow Actions:</span>
+            <span className="text-xs font-bold text-slate-600 uppercase px-1">Pickup Workflow Actions:</span>
 
             {!isOnline && activeOrder.status === 'AGENT_ASSIGNED' && (
-              <div className="bg-rose-950/60 border border-rose-800 p-3.5 rounded-2xl space-y-2 text-center">
-                <p className="text-xs text-rose-300 font-bold">
+              <div className="bg-rose-50 border border-rose-200 p-3.5 rounded-2xl space-y-2 text-center">
+                <p className="text-xs text-rose-700 font-bold">
                   ⚠️ You are currently OFFLINE. Switch to ONLINE to accept pickups.
                 </p>
                 <button
@@ -1384,7 +1161,7 @@ export default function AgentDashboardPage() {
               <button
                 onClick={() => handleCallEndpoint('accept')}
                 disabled={Boolean(actionLoading)}
-                className="w-full btn-glossy-primary rounded-full text-white font-black text-sm py-4 shadow-lg flex items-center justify-center gap-2 tracking-wide"
+                className="w-full btn-glossy-primary rounded-full text-slate-900 font-black text-sm py-4 shadow-lg flex items-center justify-center gap-2 tracking-wide"
               >
                 {actionLoading === 'accept' ? (
                   <RefreshCw className="w-5 h-5 animate-spin shrink-0" />
@@ -1399,7 +1176,7 @@ export default function AgentDashboardPage() {
               <button
                 onClick={() => handleCallEndpoint('start')}
                 disabled={Boolean(actionLoading)}
-                className="w-full btn-glossy-primary rounded-full text-white font-black text-sm py-4 shadow-lg flex items-center justify-center gap-2 tracking-wide"
+                className="w-full btn-glossy-primary rounded-full text-slate-900 font-black text-sm py-4 shadow-lg flex items-center justify-center gap-2 tracking-wide"
               >
                 {actionLoading === 'start' ? (
                   <RefreshCw className="w-5 h-5 animate-spin shrink-0" />
@@ -1414,7 +1191,7 @@ export default function AgentDashboardPage() {
               <button
                 onClick={() => handleCallEndpoint('arrive')}
                 disabled={Boolean(actionLoading)}
-                className="w-full btn-glossy-blue rounded-full text-white font-black text-sm py-4 shadow-lg flex items-center justify-center gap-2 tracking-wide"
+                className="w-full btn-glossy-blue rounded-full text-slate-900 font-black text-sm py-4 shadow-lg flex items-center justify-center gap-2 tracking-wide"
               >
                 {actionLoading === 'arrive' ? (
                   <RefreshCw className="w-5 h-5 animate-spin shrink-0" />
@@ -1442,27 +1219,27 @@ export default function AgentDashboardPage() {
           </div>
         </div>
       ) : dashboardError ? (
-        <div role="status" className="mx-4 rounded-2xl border border-amber-800/60 bg-amber-950/40 p-5 text-center text-xs text-amber-200">
+        <div role="status" className="mx-4 rounded-2xl border border-amber-200 bg-amber-50 p-5 text-center text-xs text-amber-700">
           Pickup assignments could not be confirmed. Retry to check your current work.
         </div>
       ) : (
-        <div className="p-8 text-center text-slate-400 space-y-3">
+        <div className="p-8 text-center text-slate-600 space-y-3">
           <Truck className="w-12 h-12 text-slate-600 mx-auto" />
-          <h3 className="font-bold text-white text-base">No Active Pickup Assigned</h3>
-          <p className="text-xs text-slate-400">You are on duty in Bengaluru. New orders will appear here automatically.</p>
+          <h3 className="font-bold text-slate-900 text-base">No Active Pickup Assigned</h3>
+          <p className="text-xs text-slate-600">{isOnline?'You’re online in Bengaluru. Eligible nearby pickups will appear here automatically.':'You’re offline. Go online when you’re ready to receive a pickup.'}</p>
         </div>
       )}
 
       <section id="agent-history" className="mx-4 mt-6 space-y-3 scroll-mt-36">
-        <h2 className="text-lg font-bold">Your pickups</h2>
-        <p className="text-xs text-slate-400">Recent assignments from the current dashboard sync.</p>
-        <input aria-label="Search agent pickups" value={historySearch} onChange={e=>setHistorySearch(e.target.value)} placeholder="Search pickup number or area" className="w-full p-3 rounded-xl bg-slate-800 border border-slate-700 text-sm" />
+        <div className="partner-section-title"><h2>Recent pickups</h2><Link href="/agent/pickups">View all <ChevronRight size={16}/></Link></div>
+        <p className="text-xs text-slate-600">Recent assignments from the current dashboard sync.</p>
+        <input aria-label="Search agent pickups" value={historySearch} onChange={e=>setHistorySearch(e.target.value)} placeholder="Search pickup number or area" className="w-full p-3 rounded-xl bg-white border border-slate-200 text-sm" />
         <div className="agent-filter-tabs" aria-label="Filter pickups">{['all','active','completed','cancelled'].map(filter=><button type="button" key={filter} aria-pressed={historyFilter===filter} onClick={()=>setHistoryFilter(filter)}>{filter}</button>)}</div>
-        {visibleHistory.length===0 && <p role="status" className="p-5 rounded-2xl bg-slate-800 text-slate-300 text-sm">No pickups match this view.</p>}
-        {visibleHistory.map(order=><Link key={order.id} href={`/agent/pickups/${order.id}`} className="block bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-2">
-          <div className="flex justify-between gap-3"><strong>#{order.orderNumber}</strong><span className="text-xs text-emerald-300">{order.status.replaceAll('_',' ')}</span></div>
-          <p className="text-sm text-slate-300">{order.address?.area || 'Pickup area'} · {new Date(order.createdAt).toLocaleDateString('en-IN')}</p>
-          <p className="text-xs text-slate-400">{order.scheduledSlot || 'ASAP pickup'} · View details</p>
+        {visibleHistory.length===0 && <p role="status" className="p-5 rounded-2xl bg-white text-slate-600 text-sm">No pickups match this view.</p>}
+        {visibleHistory.slice(0,3).map(order=><Link key={order.id} href={`/agent/pickups/${order.id}`} className="block bg-white border border-slate-200 rounded-2xl p-4 space-y-2">
+          <div className="flex justify-between gap-3"><strong>#{order.orderNumber}</strong><span className="text-xs text-emerald-700">{order.status.replaceAll('_',' ')}</span></div>
+          <p className="text-sm text-slate-600">{order.address?.area || 'Pickup area'} · {new Date(order.createdAt).toLocaleDateString('en-IN')}</p>
+          <p className="text-xs text-slate-600">{order.scheduledSlot || 'ASAP pickup'} · View details</p>
         </Link>)}
       </section>
 
@@ -1474,12 +1251,12 @@ export default function AgentDashboardPage() {
           aria-label="Record Digital Scale Weights"
           ref={dialogRef}
           tabIndex={-1}
-          className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
         >
-          <div className="bg-slate-900 border border-slate-800 rounded-t-3xl sm:rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="text-base font-extrabold text-white flex items-center gap-2">
-                <Scale className="w-5 h-5 text-emerald-400" />
+          <div className="bg-white border border-slate-200 rounded-t-3xl sm:rounded-3xl p-6 max-w-md w-full space-y-4 shadow-sm max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                <Scale className="w-5 h-5 text-emerald-700" />
                 Record Digital Scale Weights
               </h3>
               <button
@@ -1487,25 +1264,25 @@ export default function AgentDashboardPage() {
                   if (!submittingWeigh) setShowWeighModal(false);
                 }}
                 disabled={submittingWeigh}
-                className="text-slate-400 hover:text-white text-xs font-bold p-1 rounded-lg disabled:opacity-50"
+                className="text-slate-600 hover:text-slate-900 text-xs font-bold p-1 rounded-lg disabled:opacity-50"
               >
                 ✕ Close
               </button>
             </div>
 
             {weighModalError && (
-              <div className="p-3 bg-rose-950/80 border border-rose-800 text-rose-300 rounded-2xl text-xs font-bold flex items-center gap-2 animate-scale-in">
-                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-2xl text-xs font-bold flex items-center gap-2 animate-scale-in">
+                <AlertCircle className="w-4 h-4 text-rose-700 shrink-0" />
                 <span>{weighModalError}</span>
               </div>
             )}
 
             <div className="space-y-3">
               {actualWeightsInput.map((item, idx) => (
-                <div key={item.itemId || item.categoryId || idx} className="bg-slate-800 p-3 rounded-2xl border border-slate-700 flex items-center justify-between">
+                <div key={item.itemId || item.categoryId || idx} className="bg-white p-3 rounded-2xl border border-slate-200 flex items-center justify-between">
                   <div>
-                    <span className="text-xs font-bold text-white block">{item.categoryName}</span>
-                    <span className="text-[10px] text-slate-400">
+                    <span className="text-xs font-bold text-slate-900 block">{item.categoryName}</span>
+                    <span className="text-xs text-slate-600">
                       Customer estimate: {item.estimatedWeight} kg (for reference only)
                     </span>
                   </div>
@@ -1529,27 +1306,27 @@ export default function AgentDashboardPage() {
                         }
                       }}
                       placeholder="0.0"
-                      className="w-24 bg-slate-900 border border-slate-600 rounded-xl p-2 text-sm font-bold text-emerald-400 text-right focus:outline-none focus:border-emerald-500"
+                      className="w-24 bg-white border border-slate-200 rounded-xl p-2 text-sm font-bold text-emerald-700 text-right focus:outline-none focus:border-emerald-500"
                     />
-                    <span className="text-xs text-slate-400 font-bold">kg</span>
+                    <span className="text-xs text-slate-600 font-bold">kg</span>
                   </div>
                 </div>
               ))}
             </div>
 
-            <p className="rounded-xl border border-slate-700 bg-slate-800/70 p-3 text-xs text-slate-400">
+            <p className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
               Scale-photo upload is not available in this portal. No photo evidence will be attached.
             </p>
 
             {/* Doorstep Weighing Notes */}
             <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-400">Doorstep Notes (Optional):</label>
+              <label className="block text-xs font-bold text-slate-600">Doorstep Notes (Optional):</label>
               <input
                 type="text"
                 placeholder="e.g. Verified and weighed on digital scale at doorstep"
                 value={weighNotes}
                 onChange={(e) => setWeighNotes(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-xs text-slate-300 focus:outline-none focus:border-emerald-500"
+                className="w-full bg-white border border-slate-200 rounded-xl p-2.5 text-xs text-slate-600 focus:outline-none focus:border-emerald-500"
               />
             </div>
 
@@ -1558,7 +1335,7 @@ export default function AgentDashboardPage() {
               type="button"
               onClick={handleSubmitWeighingAndComplete}
               disabled={submittingWeigh}
-              className="w-full btn-glossy-primary rounded-full text-slate-950 font-black text-sm py-4 shadow-xl flex items-center justify-center gap-2 cursor-pointer"
+              className="w-full btn-glossy-primary rounded-full text-slate-950 font-black text-sm py-4 shadow-sm flex items-center justify-center gap-2 cursor-pointer"
             >
               {submittingWeigh ? (
                 <>
@@ -1584,66 +1361,66 @@ export default function AgentDashboardPage() {
           aria-label="Pickup Details"
           ref={dialogRef}
           tabIndex={-1}
-          className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
         >
-          <div className="bg-slate-900 border border-slate-800 rounded-t-3xl sm:rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div className="bg-white border border-slate-200 rounded-t-3xl sm:rounded-3xl p-6 max-w-md w-full space-y-4 shadow-sm max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
               <div>
-                <span className="text-[10px] font-black text-amber-400 bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-500/30 uppercase">
+                <span className="text-xs font-black text-amber-700 bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-500/30 uppercase">
                   UNASSIGNED PICKUP
                 </span>
-                <h3 className="text-base font-extrabold text-white mt-1 flex items-center gap-2">
-                  <Truck className="w-5 h-5 text-emerald-400" />
+                <h3 className="text-base font-extrabold text-slate-900 mt-1 flex items-center gap-2">
+                  <Truck className="w-5 h-5 text-emerald-700" />
                   Pickup Details
                 </h3>
               </div>
               <button
                 onClick={() => setViewPickupModal(null)}
-                className="text-slate-400 hover:text-white p-1 rounded-xl bg-slate-800"
+                className="text-slate-600 hover:text-slate-900 p-1 rounded-xl bg-white"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="space-y-3 text-xs">
-              <div className="flex items-center justify-between bg-slate-800/80 p-3 rounded-2xl border border-slate-700/50">
-                <span className="text-slate-400 font-medium">Order Number:</span>
-                <span className="font-mono font-bold text-white">{viewPickupModal.orderNumber}</span>
+              <div className="flex items-center justify-between bg-white p-3 rounded-2xl border border-slate-200">
+                <span className="text-slate-600 font-medium">Order Number:</span>
+                <span className="font-mono font-bold text-slate-900">{viewPickupModal.orderNumber}</span>
               </div>
 
-              <div className="flex items-center justify-between bg-slate-800/80 p-3 rounded-2xl border border-slate-700/50">
-                <span className="text-slate-400 font-medium">Status:</span>
-                <span className="font-bold text-amber-400 bg-amber-950/60 border border-amber-800/60 px-2 py-0.5 rounded-full text-[11px]">
+              <div className="flex items-center justify-between bg-white p-3 rounded-2xl border border-slate-200">
+                <span className="text-slate-600 font-medium">Status:</span>
+                <span className="font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full text-xs">
                   {viewPickupModal.status} (Unassigned)
                 </span>
               </div>
 
-              <div className="bg-slate-800/80 p-3 rounded-2xl border border-slate-700/50 space-y-1">
-                <span className="text-slate-400 font-medium block">Pickup Location / Service Area:</span>
-                <p className="font-bold text-white">
+              <div className="bg-white p-3 rounded-2xl border border-slate-200 space-y-1">
+                <span className="text-slate-600 font-medium block">Pickup Location / Service Area:</span>
+                <p className="font-bold text-slate-900">
                   📍 {viewPickupModal.address?.area || viewPickupModal.serviceArea?.name || 'Bengaluru Zone'}
                 </p>
-                <p className="text-slate-400 text-[11px] leading-relaxed">
+                <p className="text-slate-600 text-xs leading-relaxed">
                   Exact pickup details are shown after the assignment is accepted.
                 </p>
               </div>
 
               {viewPickupModal.items && viewPickupModal.items.length > 0 && (
-                <div className="bg-slate-800/80 p-3 rounded-2xl border border-slate-700/50 space-y-2">
-                  <span className="text-slate-400 font-medium block">Scrap Categories & Estimated Weights:</span>
+                <div className="bg-white p-3 rounded-2xl border border-slate-200 space-y-2">
+                  <span className="text-slate-600 font-medium block">Scrap Categories & Estimated Weights:</span>
                   <div className="space-y-1.5">
                     {viewPickupModal.items.map((item: any) => (
-                      <div key={item.id} className="flex items-center justify-between bg-slate-900/60 p-2 rounded-xl border border-slate-800">
-                        <span className="text-slate-200 font-semibold">{item.category?.name || 'Item'}</span>
-                        <span className="text-emerald-400 font-bold">{item.estimatedWeight} kg</span>
+                      <div key={item.id} className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200">
+                        <span className="text-slate-600 font-semibold">{item.category?.name || 'Item'}</span>
+                        <span className="text-emerald-700 font-bold">{item.estimatedWeight} kg</span>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
 
-              <div className="bg-slate-950/60 border border-slate-800 p-3 rounded-2xl text-[11px] text-slate-400 leading-relaxed">
-                ℹ️ <strong className="text-slate-300">Read-Only View:</strong> This pickup is unassigned and broadcast to eligible available agents in this service zone. Order status remains <code className="text-amber-400 font-mono">BOOKING_RECEIVED</code>.
+              <div className="bg-white border border-slate-200 p-3 rounded-2xl text-xs text-slate-600 leading-relaxed">
+                ℹ️ <strong className="text-slate-600">Read-Only View:</strong> This pickup is unassigned and broadcast to eligible available agents in this service zone. Order status remains <code className="text-amber-700 font-mono">BOOKING_RECEIVED</code>.
               </div>
             </div>
 
@@ -1662,7 +1439,7 @@ export default function AgentDashboardPage() {
 
             <button
               onClick={() => setViewPickupModal(null)}
-              className="w-full btn-glossy-dark rounded-full text-white font-bold text-xs py-3.5 uppercase tracking-wider transition-colors border border-slate-700"
+              className="w-full btn-glossy-dark rounded-full text-slate-900 font-bold text-xs py-3.5 uppercase tracking-wider transition-colors border border-slate-200"
             >
               CLOSE DETAILS
             </button>

@@ -1,4 +1,4 @@
-export type AgentSessionUser={id:string;name?:string;phone?:string;role:string;agent?:{id:string;onboardingApproved?:boolean;status?:string}};
+export type AgentSessionUser={id:string;name?:string;phone?:string;role:string;agent?:{id:string;onboardingApproved?:boolean;status?:string;vehicleNumber?:string;vehicleType?:string}};
 export type AgentSessionState={status:'checking'|'guest'|'onboarding'|'approved'|'error';user:AgentSessionUser|null};
 export function classifyAgentSession(result:any):AgentSessionState{
  const user=result?.success===true&&result?.data?.user;

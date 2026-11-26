@@ -1,50 +1,11 @@
 'use client';
-
 import {useAgentSession} from './AgentSession';
 import Link from '@/components/AppLink';
-import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Wallet, ShieldCheck } from 'lucide-react';
-
+import {usePathname} from 'next/navigation';
+import {House, ChartNoAxesColumnIncreasing, PackageCheck, CircleHelp, Menu} from 'lucide-react';
 export default function AgentBottomNav() {
-  const pathname = usePathname();
-  const {session}=useAgentSession();
-
-  // Only render inside /agent paths
-  if (session.status!=='approved'||!pathname.startsWith('/agent')||pathname==='/agent/onboarding') return null;
-
-  const links = [
-    { href: '/agent', label: 'Dashboard', icon: LayoutDashboard },
-    { href: '/agent/wallet', label: 'Wallet', icon: Wallet },
-    { href: '/agent/onboarding', label: 'Verification', icon: ShieldCheck },
-  ];
-
-  return (
-    <nav
-      aria-label="Agent navigation"
-      className="fixed bottom-0 left-0 right-0 z-40 bg-slate-900 text-white border-t border-slate-800 px-3 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))] shadow-2xl"
-    >
-      <div className="flex items-center justify-around">
-        {links.map((link) => {
-          const Icon = link.icon;
-          const isActive = pathname === link.href;
-
-          return (
-            <Link
-              key={link.href}
-              href={link.href}
-              aria-current={isActive ? 'page' : undefined}
-              className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all ${
-                isActive
-                  ? 'text-emerald-400 bg-slate-800/80 font-bold scale-105'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <Icon className="w-5 h-5" />
-              <span className="text-sm mt-1 tracking-tight">{link.label}</span>
-            </Link>
-          );
-        })}
-      </div>
-    </nav>
-  );
+ const pathname=usePathname(), {session}=useAgentSession();
+ if(session.status!=='approved'||!pathname.startsWith('/agent')||pathname==='/agent/onboarding')return null;
+ const links=[{href:'/agent',label:'Home',icon:House},{href:'/agent/wallet',label:'Earnings',icon:ChartNoAxesColumnIncreasing},{href:'/agent/pickups',label:'Pickups',icon:PackageCheck},{href:'/agent/help',label:'Help',icon:CircleHelp},{href:'/agent/more',label:'More',icon:Menu}];
+ return <nav aria-label="Agent navigation" className="partner-bottom-nav"><div>{links.map(({href,label,icon:Icon})=>{const active=href==='/agent'?pathname===href:pathname.startsWith(href);return <Link key={href} href={href} aria-current={active?'page':undefined}><Icon size={23} strokeWidth={active?2.4:1.8}/><span>{label}</span></Link>;})}</div></nav>;
 }
