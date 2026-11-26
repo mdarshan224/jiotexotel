@@ -1,3 +1,4 @@
+import {reconcilePickupMilestonesTx} from '@/lib/pickupMilestones';
 import { requirePickupVerified, PickupOtpError } from '@/lib/orders/pickupOtp';
 import { agentOnboardingApproved } from '@/lib/cashfree/agentOnboarding';
 import { agentOrder } from '@/lib/orders/agentOrder';
@@ -72,7 +73,7 @@ export async function POST(
     }
 
     if (order.status === 'PICKUP_COMPLETED' || order.status === 'SETTLEMENT_COMPLETED') {
-      await db.$transaction(tx => recordPickupEarnings(tx, {agentId: order.agentId!, orderId: order.id, orderNumber: order.orderNumber, amount: order.finalAmount, gstRate: order.gstRate}));
+      await db.$transaction(async tx => {await recordPickupEarnings(tx, {agentId: order.agentId!, orderId: order.id, orderNumber: order.orderNumber, amount: order.finalAmount, gstRate: order.gstRate});await reconcilePickupMilestonesTx(tx,order.customerId);});
       return successResponse(agentOrder(order), 200, { message: 'Order was already completed.' });
     }
 
@@ -209,6 +210,7 @@ export async function POST(
 
       if (currentOrder.status === 'PICKUP_COMPLETED' || currentOrder.status === 'SETTLEMENT_COMPLETED') {
         await recordPickupEarnings(tx, {agentId: currentOrder.agentId, orderId: id, orderNumber: currentOrder.orderNumber, amount: currentOrder.finalAmount, gstRate: currentOrder.gstRate});
+        await reconcilePickupMilestonesTx(tx,currentOrder.customerId);
         return { kind: 'alreadyCompleted' as const, order: currentOrder };
       }
 
@@ -409,6 +411,7 @@ export async function POST(
         });
       }
 
+      await reconcilePickupMilestonesTx(tx,currentOrder.customerId);
       return { kind: 'completed' as const, order: updated };
     }, {
       isolationLevel: 'Serializable',

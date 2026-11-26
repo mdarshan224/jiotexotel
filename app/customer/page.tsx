@@ -1,5 +1,6 @@
 'use client';
 
+import CustomerPickupMilestones from '@/components/CustomerPickupMilestones';
 import { useState, useEffect, useCallback } from 'react';
 import Link from '@/components/AppLink';
 import {
@@ -119,6 +120,7 @@ export default function CustomerDashboardPage() {
   return (
     <div className="min-h-screen bg-slate-50 py-8 px-4 sm:px-6">
       <div className="max-w-5xl mx-auto space-y-6">
+        {user?.role==='CUSTOMER' && <CustomerPickupMilestones key={user.id}/>}
         {/* Welcome Header */}
         <header className="rounded-3xl border border-slate-200/80 bg-white p-6 sm:p-8 shadow-sm flex flex-wrap items-center justify-between gap-4">
           <div>

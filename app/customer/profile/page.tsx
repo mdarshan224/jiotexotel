@@ -18,6 +18,7 @@ import {
   Smartphone,
   CheckCircle2,
 } from 'lucide-react';
+import CustomerPickupMilestones from '@/components/CustomerPickupMilestones';
 import MobileAppCapabilities from '@/components/MobileAppCapabilities';
 import MobileAccountLinks from '@/components/MobileAccountLinks';
 import CustomerAccountSettings from '@/components/CustomerAccountSettings';
@@ -190,6 +191,8 @@ export default function CustomerProfilePage() {
           </div>
         </div>
       </div>
+
+      {!user.deletionDueAt && <CustomerPickupMilestones key={user.id}/>}
 
       {/* MENU GROUPS */}
       {!user.deletionDueAt && menuGroups.map((group, idx) => (

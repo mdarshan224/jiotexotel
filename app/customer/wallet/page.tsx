@@ -1,5 +1,7 @@
 'use client';
 
+import PickupMilestoneCard from '@/components/PickupMilestoneCard';
+import type {PickupMilestoneProgress} from '@/lib/pickupMilestonesPolicy';
 import { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
@@ -19,6 +21,7 @@ import {
 import { preparePortalCheckout as loadRazorpayScript, createPortalCheckout } from '@/lib/portalCheckout';
 
 type WalletData = {
+  milestones?:PickupMilestoneProgress|null;
   balance: number;
   transactions: Array<{
     id: string;
@@ -88,7 +91,7 @@ export default function CustomerWalletPage() {
         subscriptionsRes.json(),
       ]);
 
-      if (walletData.success) setWallet({balance:Number(walletData.data?.wallet?.availableBalance ?? walletData.data?.wallet?.balance ?? 0),transactions:walletData.data?.transactions || []});
+      if (walletData.success) setWallet({balance:Number(walletData.data?.wallet?.availableBalance ?? walletData.data?.wallet?.balance ?? 0),transactions:walletData.data?.transactions || [],milestones:walletData.data?.milestones||null});
       if (offersData.success) setOffers(offersData.data);
       if (subscriptionsData.success) setSubscriptions(subscriptionsData.data);
       if (!walletData.success && walletRes.status === 401) {
@@ -368,6 +371,7 @@ export default function CustomerWalletPage() {
           <span>{message.text}</span>
         </div>
       )}
+      {wallet?.milestones && <PickupMilestoneCard progress={wallet.milestones}/>}
       {/* Wallet Balance & Topup Section */}
       <section className="grid gap-4 md:grid-cols-[1fr_1.5fr]">
         <div className="rounded-3xl bg-slate-900 p-6 text-white shadow-lg">

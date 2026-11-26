@@ -1,3 +1,4 @@
+import {reconcilePickupMilestonesTx} from '@/lib/pickupMilestones';
 import { initializePickupGate, requirePickupVerified } from '@/lib/orders/pickupOtp';
 import { recordPickupEarnings, earningsTax } from '@/lib/agentEarnings';
 import { agentOnboardingApproved } from '@/lib/cashfree/agentOnboarding';
@@ -88,6 +89,7 @@ export async function transitionOrder<T = unknown>(
 
         if (newStatus === 'PICKUP_COMPLETED' || newStatus === 'SETTLEMENT_COMPLETED') {
           const completed = await tx.order.findUnique({where:{id:orderId}});
+          if(completed?.customerId)await reconcilePickupMilestonesTx(tx,completed.customerId);
           if (completed?.agentId) {
             const split = await recordPickupEarnings(tx, {agentId:completed.agentId,orderId:completed.id,orderNumber:completed.orderNumber,amount:completed.finalAmount,gstRate:completed.gstRate});
             if (newStatus === 'PICKUP_COMPLETED') {

@@ -1,3 +1,4 @@
+import {reconcilePickupMilestones} from '@/lib/pickupMilestones';
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthUser } from '@/lib/auth/middleware';
 import { getOrCreateWallet, getSpendableWalletPaise, fromPaise } from '@/lib/wallet';
@@ -10,6 +11,8 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    let milestones=null;
+    try{milestones=(await reconcilePickupMilestones(db,authUser.customerId))?.progress||null;}catch{console.warn('Wallet milestone recovery deferred.');}
     const wallet = await getOrCreateWallet(authUser.customerId);
     const transactions = await db.walletTransaction.findMany({
       where: { customerId: authUser.customerId },
@@ -17,7 +20,7 @@ export async function GET(req: NextRequest) {
       take: 100,
     });
     const availablePaise = await getSpendableWalletPaise(db, wallet);
-    return NextResponse.json({ success: true, data: { wallet: {...wallet, availableBalance:fromPaise(availablePaise), availableBalancePaise:availablePaise}, transactions } });
+    return NextResponse.json({ success: true, data: { wallet: {...wallet, availableBalance:fromPaise(availablePaise), availableBalancePaise:availablePaise}, transactions, milestones } },{headers:{'Cache-Control':'private, no-store',Vary:'Cookie, Authorization'}});
   } catch (error) {
     console.error('Customer wallet lookup failed:', error);
     return NextResponse.json({ success: false, message: 'Unable to load wallet details.' }, { status: 500 });
